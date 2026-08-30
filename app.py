@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -7,7 +9,8 @@ import yfinance as yf
 from parsers import parse_vaneck, parse_ishares, parse_spdr
 from metrikler import (donem_getirisi, yogunlasma, katki,
                        risk_metrikleri, drawdown_serisi,
-                       risksiz_gunluk_oran, ortusme, ortak_hisseler)
+                       risksiz_gunluk_oran, ortusme, ortak_hisseler,
+                       katki_donem_basi)
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
 
@@ -39,9 +42,16 @@ def tum_holdings(tema):
 
 @st.cache_data
 def fiyat_yukle(tickerlar):
-    df = yf.download(list(tickerlar), start="2025-08-01",
+    df = yf.download(list(tickerlar), start="2019-01-01",
                      auto_adjust=True, progress=False)["Close"]
     return df.dropna(how="all")
+
+
+@st.cache_data
+def gecmis_yukle():
+    """Geçmiş holdings (gecmis.py ile toplanır). Yoksa None."""
+    yol = Path("data/history/holdings.parquet")
+    return pd.read_parquet(yol) if yol.exists() else None
 
 
 # --- Kenar çubuğu ---
@@ -62,7 +72,16 @@ detay_sekme, karsilastirma_sekme = st.tabs(["Fon detayı", "Karşılaştırma"])
 # =====================================================================
 with detay_sekme:
     h = holdings_yukle(fon, tema)
-    fiyat = fiyat_yukle(tuple(h["ticker"]) + (fon, GOSTERGE, RISKSIZ))
+
+    # geçmiş holdings'teki ticker'lar da lazım: portföyden çıkmış hisseler
+    # olmadan dönem başı katkısı eksik hesaplanır
+    gec_tum = gecmis_yukle()
+    eski = ()
+    if gec_tum is not None:
+        eski = tuple(sorted(set(gec_tum[gec_tum["fund"] == fon]["ticker"])
+                            - set(h["ticker"])))
+
+    fiyat = fiyat_yukle(tuple(h["ticker"]) + eski + (fon, GOSTERGE, RISKSIZ))
     getiri = donem_getirisi(fiyat, gun)
 
     st.title(f"{fon} — {donem_adi}")
@@ -111,8 +130,33 @@ with detay_sekme:
 
     # --- Katkı ---
     st.subheader("Getiriye katkı")
-    kdf, veri_yok = katki(h, getiri)
-    st.caption("Katkı = güncel ağırlık × dönem getirisi (yaklaşık hesap).")
+
+    kdf_bas, w_tarih, vy_bas = (None, None, [])
+    if gec_tum is not None:
+        kdf_bas, w_tarih, vy_bas = katki_donem_basi(gec_tum, fiyat, fon, gun)
+
+    if kdf_bas is not None:
+        yontem = st.radio(
+            "Ağırlık", ["Dönem başı (doğru)", "Güncel (yaklaşık)"],
+            horizontal=True, label_visibility="collapsed")
+        donem_basi = yontem.startswith("Dönem başı")
+    else:
+        donem_basi = False
+        st.caption("Geçmiş holdings yok — `python3 gecmis.py` ile toplanabilir.")
+
+    if donem_basi:
+        kdf, veri_yok = kdf_bas, vy_bas
+        st.caption(f"Katkı = {w_tarih:%d.%m.%Y} ağırlıkları × dönem getirisi.")
+    else:
+        kdf, veri_yok = katki(h, getiri)
+        st.caption("Katkı = **güncel** ağırlık × dönem getirisi. "
+                   "Dönem içinde yükselen hisseleri fazla temsil eder.")
+
+    # mutabakat: katkı toplamı fonun gerçek getirisini tutturmalı
+    fark = kdf["katki"].sum() - r["getiri"]
+    st.caption(f"Katkı toplamı %{kdf['katki'].sum():.2f} — "
+               f"fonun gerçek getirisi %{r['getiri']:.2f} — "
+               f"fark **{fark:+.2f}** puan")
     if veri_yok:
         st.caption(f"Yetersiz veri: {', '.join(veri_yok)}")
 

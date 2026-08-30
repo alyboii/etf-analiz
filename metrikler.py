@@ -118,3 +118,43 @@ def ortak_hisseler(holdings, en_az=None):
     tablo = tablo[tablo.notna().sum(axis=1) >= en_az]
 
     return tablo.sort_values(list(w)[0], ascending=False)
+
+
+def gecmis_agirlik(gecmis, fon, tarih):
+    """Verilen tarihteki (ya da öncesindeki en yakın) ağırlık anlık görüntüsü.
+
+    (anlik_goruntu_tarihi, DataFrame) döner; hiç kayıt yoksa (None, None).
+    """
+    d = gecmis[(gecmis["fund"] == fon) & (gecmis["date"] <= tarih)]
+    if d.empty:
+        return None, None
+    en_yakin = d["date"].max()
+    return en_yakin, d[d["date"] == en_yakin]
+
+
+def katki_donem_basi(gecmis, fiyat_df, fon, gun):
+    """Dönem BAŞI ağırlıklarıyla katkı — geriye dönük yanlılık olmadan.
+
+    katki() bugünkü ağırlıkları geçmiş getiriye uygular; bu, dönem içinde
+    yükselen hisseleri fazla temsil eder. Bu fonksiyon dönemin başındaki
+    gerçek ağırlıkları kullanır.
+
+    (katki_df, anlik_goruntu_tarihi, veri_yok) döner.
+    """
+    pencere = fiyat_df.iloc[-gun:]
+    bas_tarih = pencere.index[0]
+
+    w_tarih, w = gecmis_agirlik(gecmis, fon, bas_tarih)
+    if w is None:
+        return None, None, []
+
+    getiri = donem_getirisi(pencere, len(pencere))
+
+    d = w[["ticker", "name", "weight"]].copy()
+    d["getiri"] = d["ticker"].map(getiri)
+    veri_yok = d[d["getiri"].isna()]["ticker"].tolist()
+
+    d = d.dropna(subset=["getiri"]).copy()
+    d["katki"] = (d["weight"] / 100) * d["getiri"]
+
+    return d.sort_values("katki", ascending=False), w_tarih, veri_yok
