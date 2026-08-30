@@ -72,3 +72,49 @@ def drawdown_serisi(seri):
     """Her gün için zirveye göre yüzde düşüş."""
     seri = seri.dropna()
     return (seri / seri.cummax() - 1) * 100
+
+
+def risksiz_gunluk_oran(seri):
+    """Risksiz getiri vekilinden (ör. BIL) günlük ortalama oran.
+
+    Sharpe'ın paydası yıllıklandırılmış volatilite olduğu için burada
+    günlük ondalık oran döner; risk_metrikleri bunu doğrudan alır.
+    """
+    seri = seri.dropna()
+    if len(seri) < 2:
+        return 0.0
+    return seri.pct_change().mean()
+
+
+def ortusme(holdings):
+    """Fonlar arası ikili ağırlık örtüşmesi matrisi (%).
+
+    Örtüşme = iki fonun ortak hisselerinde min(ağırlık) toplamı.
+    %100 birebir aynı portföy, %0 hiç ortak hisse yok demek.
+    holdings: {fon_adi: holdings DataFrame}
+    """
+    w = {f: d.groupby("ticker")["weight"].sum() for f, d in holdings.items()}
+    fonlar = list(w)
+
+    m = pd.DataFrame(index=fonlar, columns=fonlar, dtype=float)
+    for a in fonlar:
+        for b in fonlar:
+            ortak = w[a].index.intersection(w[b].index)
+            m.loc[a, b] = pd.concat([w[a][ortak], w[b][ortak]],
+                                    axis=1).min(axis=1).sum()
+    return m
+
+
+def ortak_hisseler(holdings, en_az=None):
+    """Birden çok fonda geçen hisselerin ağırlık tablosu.
+
+    en_az: bir hissenin kaç fonda birden bulunması gerektiği
+    (varsayılan: hepsinde).
+    """
+    w = {f: d.groupby("ticker")["weight"].sum() for f, d in holdings.items()}
+    tablo = pd.DataFrame(w)
+
+    en_az = en_az or len(w)
+    tablo = tablo[tablo.notna().sum(axis=1) >= en_az]
+
+    return tablo.sort_values(list(w)[0], ascending=False)
