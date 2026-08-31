@@ -170,3 +170,84 @@ def hisse_siralamasi(holdings, ticker):
     if ticker not in tablo.index:
         return pd.Series(dtype=float)
     return tablo.loc[ticker].dropna().sort_values(ascending=False)
+
+
+def _seri_getiri(seri, gun, min_oran=0.9):
+    """Tek fiyat serisinde son 'gun' işlem gününün yüzde getirisi.
+
+    Pencerede yeterli veri yoksa (yeni listelenmiş) NaN döner.
+    """
+    p = seri.dropna()
+    if len(p) < 2:
+        return np.nan
+    p = p.iloc[-gun:]
+    if len(p) < gun * min_oran:
+        return np.nan
+    return (p.iloc[-1] / p.iloc[0] - 1) * 100
+
+
+def alternatif_getiriler(fiyat_df, fon, para="TL", faiz_yillik=0.45,
+                         donemler=None):
+    """Fon ve alternatif varlıkların dönem getirileri (tidy DataFrame).
+
+    Kolonlar: donem, varlik, getiri, fon.
+    para="TL": USD serileri TRY=X ile liraya çevrilir; dolar=USD/TRY,
+               euro=EUR/TRY, faiz=ayarlanabilir TL oranı (piyasa dışı).
+    para="USD": her şey USD; euro=EUR/USD, faiz=BIL; "dolar" baz para
+                olduğu için çıkarılır.
+
+    fiyat_df: fon, GC=F, SI=F, TRY=X, EURTRY=X, EURUSD=X, BIL kolonlarını
+    içermeli. FX takvimi farklı olduğu için önce ffill uygulanır.
+    """
+    donemler = donemler or {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252}
+
+    # ÖNCE fonun gerçek işlem günlerine in, SONRA alt kolonları o günlere
+    # taşı. Tersi yapılırsa (ffill sonra filtre) fonun fiyatı FX'in işlem
+    # gördüğü hafta sonlarına da taşınır ve dönem penceresi kayar.
+    df = fiyat_df.loc[fiyat_df[fon].notna()].ffill()
+
+    if para == "TL":
+        usdtry = df["TRY=X"]
+        varliklar = {
+            fon:      df[fon] * usdtry,
+            "Altın":  df["GC=F"] * usdtry,
+            "Gümüş":  df["SI=F"] * usdtry,
+            "Dolar":  usdtry,
+            "Euro":   df["EURTRY=X"],
+        }
+        faiz_var = True
+    else:
+        varliklar = {
+            fon:      df[fon],
+            "Altın":  df["GC=F"],
+            "Gümüş":  df["SI=F"],
+            "Euro":   df["EURUSD=X"],
+            "Faiz":   df["BIL"],
+        }
+        faiz_var = False
+
+    kayit = []
+    for ad, gun in donemler.items():
+        for v, seri in varliklar.items():
+            kayit.append({"donem": ad, "varlik": v,
+                          "getiri": _seri_getiri(seri, gun)})
+        if faiz_var:
+            faiz = ((1 + faiz_yillik) ** (gun / 252) - 1) * 100
+            kayit.append({"donem": ad, "varlik": "Faiz", "getiri": faiz})
+
+    out = pd.DataFrame(kayit)
+    out["fon"] = fon
+    return out
+
+
+def fon_sektor_agirliklari(holdings, harita):
+    """{fon: holdings df} + ticker->sektör sözlüğü -> sektör × fon ağırlık (%).
+
+    Satır: sektör, kolon: fon. Ağırlık yüzde olarak toplanır.
+    """
+    kayit = {}
+    for fon, d in holdings.items():
+        s = d.copy()
+        s["sektor"] = s["ticker"].map(harita).fillna("Diğer")
+        kayit[fon] = s.groupby("sektor")["weight"].sum()
+    return pd.DataFrame(kayit).fillna(0.0)

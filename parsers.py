@@ -1,4 +1,6 @@
 
+import re
+
 import pandas as pd
 
 
@@ -169,7 +171,13 @@ BORSA_SONEK = {
     "TT": ".TW",   "LN": ".L",   "CN": ".TO",  "JP": ".T",   "GR": ".DE",
     "KS": ".KS",   "PW": ".WA",  "HK": ".HK",  "FP": ".PA",  "IM": ".MI",
     "SS": ".ST",   "AU": ".AX",  "SW": ".SW",  "NA": ".AS",  "SM": ".MC",
+    "FH": ".HE",   "HB": ".BR",  "SP": ".SI",  "NO": ".OL",
+    "C2": ".SZ",   "C1": ".SS",  "CG": ".SS",
 }
+
+# Döviz/nakit satırlarında görülen kodlar (hisse değil, elenmeli)
+DOVIZ_KODLARI = {"CNY", "EUR", "KRW", "TWD", "USD", "JPY", "HKD", "GBP",
+                 "CHF", "SGD", "CAD", "AUD", "SEK", "NOK", "DKK", "PLN"}
 
 # Standart son ekin tutmadığı istisnalar (Tayvan OTC pazarı .TWO kullanıyor)
 TICKER_ISTISNA = {
@@ -179,13 +187,21 @@ TICKER_ISTISNA = {
 
 
 def bloomberg_ticker(t):
-    """"3491 TT" -> "3491.TWO", "AIXA GR" -> "AIXA.DE", "RKLB" -> "RKLB"."""
+    """Bloomberg sembolünü yfinance sembolüne çevirir.
+
+    "3491 TT" -> "3491.TWO", "AIXA GR" -> "AIXA.DE", "700 HK" -> "0700.HK",
+    "RKLB" -> "RKLB".
+    """
     t = str(t).strip()
     if t in TICKER_ISTISNA:
         return TICKER_ISTISNA[t]
     parca = t.split()
     if len(parca) == 2 and parca[1] in BORSA_SONEK:
-        return parca[0] + BORSA_SONEK[parca[1]]
+        kod, borsa = parca
+        # Hong Kong sembolleri yfinance'te 4 haneye tamamlanır (700 -> 0700)
+        if borsa == "HK" and kod.isdigit():
+            kod = kod.zfill(4)
+        return kod + BORSA_SONEK[borsa]
     return t
 
 
@@ -218,6 +234,87 @@ def parse_tema(dosya_yolu, fon_adi):
 
     return df.reset_index(drop=True)
 
+
+def parse_globalx(dosya_yolu, fon_adi):
+    # Tarih 2. satırda: "Fund Holdings Data as of 08/28/2026"
+    with open(dosya_yolu) as f:
+        satirlar = f.readlines()
+    tarih = pd.to_datetime(satirlar[1].split("as of")[1].strip(),
+                           format="%m/%d/%Y")
+
+    df = pd.read_csv(dosya_yolu, skiprows=2)
+
+    # Ticker'ı olmayanlar (yasal metin) ve nakit satırları elenir
+    df = df[df["Ticker"].notna()].copy()
+    df["weight"] = pd.to_numeric(df["% of Net Assets"], errors="coerce")
+    df = df.dropna(subset=["weight"])
+    df = df[~df["Ticker"].str.upper().isin(["CASH", "USD"])]
+
+    df["shares"] = pd.to_numeric(
+        df["Shares Held"].astype(str).str.replace(",", ""), errors="coerce")
+    df["market_value"] = pd.to_numeric(
+        df["Market Value ($)"].astype(str).str.replace(",", ""),
+        errors="coerce")
+
+    df["weight"] = df["weight"] / df["weight"].sum() * 100
+
+    # AIQ da yabancı borsaları Bloomberg formatında veriyor ("700 HK")
+    df["Ticker"] = df["Ticker"].map(bloomberg_ticker)
+
+    df = df[["Ticker", "Name", "shares", "market_value", "weight"]].copy()
+    df.columns = ["ticker", "name", "shares", "market_value", "weight"]
+
+    df["cusip"] = None
+    df["sector"] = None
+    df["location"] = None
+    df["figi"] = None
+    df["fund"] = fon_adi
+    df["date"] = tarih
+
+    return df.reset_index(drop=True)
+
+
+def parse_roundhill(dosya_yolu, fon_adi):
+    df = pd.read_csv(dosya_yolu)
+
+    # Tarih dosya adından: CHAT_ETF_Holdings_08-30-2026.csv (MM-DD-YYYY)
+    m = re.search(r"(\d{2})-(\d{2})-(\d{4})", dosya_yolu)
+    tarih = (pd.to_datetime(f"{m.group(3)}-{m.group(1)}-{m.group(2)}")
+             if m else pd.NaT)
+
+    df = df[df["Ticker"].notna()].copy()
+    # döviz/nakit satırlarını at (CNY, EUR, Cash&Other ...)
+    df = df[~df["Ticker"].isin(DOVIZ_KODLARI)]
+    df = df[~df["Ticker"].str.contains("Cash", case=False, na=False)]
+    df["weight"] = pd.to_numeric(
+        df["Weight"].astype(str).str.rstrip("%"), errors="coerce")
+    df = df.dropna(subset=["weight"])
+
+    df["shares"] = pd.to_numeric(
+        df["Shares"].astype(str).str.replace(",", ""), errors="coerce")
+    df["market_value"] = pd.to_numeric(
+        df["Market Value"].astype(str).str.replace(r"[$,]", "", regex=True),
+        errors="coerce")
+
+    df["weight"] = df["weight"] / df["weight"].sum() * 100
+
+    # Yabancı borsalar Bloomberg formatında ("000660 KS" -> "000660.KS")
+    df["ticker"] = df["Ticker"].map(bloomberg_ticker)
+
+    df = df[["ticker", "Name", "shares", "market_value", "weight",
+             "Identifier"]].copy()
+    df.columns = ["ticker", "name", "shares", "market_value", "weight",
+                  "cusip"]
+
+    df["sector"] = None
+    df["location"] = None
+    df["figi"] = None
+    df["fund"] = fon_adi
+    df["date"] = tarih
+
+    return df.reset_index(drop=True)
+
+
 if __name__ == "__main__":
     for parser, yol, ad in [
         (parse_vaneck,  "data/raw/SMH_asof_20260827.xlsx", "SMH"),
@@ -226,7 +323,11 @@ if __name__ == "__main__":
         (parse_spdr,    "data/raw/holdings-daily-us-en-rokt.xlsx", "ROKT"),
         (parse_vaneck,  "data/raw/SMHX_asof_20260828.xlsx", "SMHX"),
         (parse_invesco, "data/raw/invesco_phlx_semiconductor_etf-Complete_Holdings.csv", "SOXQ"),
+        (parse_invesco, "data/raw/invesco_semiconductors_etf-Complete_Holdings.csv", "PSI"),
         (parse_tema,    "data/raw/NASA-holdings-08282026.csv", "NASA"),
+        (parse_ishares, "data/raw/IGV_holdings.csv", "IGV"),
+        (parse_globalx, "data/raw/aiq_full-holdings_20260828.csv", "AIQ"),
+        (parse_roundhill, "data/raw/CHAT_ETF_Holdings_08-30-2026.csv", "CHAT"),
     ]:
         df = parser(yol, ad)
         print(f"{ad}: {len(df)} hisse | toplam ağırlık "

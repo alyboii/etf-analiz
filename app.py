@@ -7,11 +7,14 @@ import streamlit as st
 import yfinance as yf
 
 from parsers import (parse_vaneck, parse_ishares, parse_spdr,
-                     parse_invesco, parse_tema)
+                     parse_invesco, parse_tema, parse_globalx,
+                     parse_roundhill)
 from metrikler import (donem_getirisi, yogunlasma, katki,
-                       risk_metrikleri, drawdown_serisi,
-                       risksiz_gunluk_oran, ortusme, ortak_hisseler,
-                       katki_donem_basi, hisse_siralamasi)
+                       risk_metrikleri, risksiz_gunluk_oran,
+                       ortusme, ortak_hisseler, katki_donem_basi,
+                       hisse_siralamasi, alternatif_getiriler,
+                       fon_sektor_agirliklari)
+import sektorler
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
 
@@ -24,19 +27,39 @@ FONLAR = {
         "SOXQ": (parse_invesco,
                  "data/raw/invesco_phlx_semiconductor_etf-"
                  "Complete_Holdings.csv"),
+        "PSI":  (parse_invesco,
+                 "data/raw/invesco_semiconductors_etf-"
+                 "Complete_Holdings.csv"),
     },
     "Uzay": {
         "ROKT": (parse_spdr, "data/raw/holdings-daily-us-en-rokt.xlsx"),
         "NASA": (parse_tema, "data/raw/NASA-holdings-08282026.csv"),
         # UFO: procureetfs.com Cloudflare arkasında; dosya elle indirilmeli
     },
+    "Yapay Zeka": {
+        "IGV":  (parse_ishares, "data/raw/IGV_holdings.csv"),
+        "AIQ":  (parse_globalx, "data/raw/aiq_full-holdings_20260828.csv"),
+        "CHAT": (parse_roundhill,
+                 "data/raw/CHAT_ETF_Holdings_08-30-2026.csv"),
+    },
 }
 
 DONEMLER = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252,
             "3 yıl": 756, "5 yıl": 1260}
 
+# Alternatif karşılaştırma her zaman bu dört dönemi birlikte gösterir
+DONEMLER_ALT = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252}
+
+# Alternatif varlık renkleri (fon rengi çalışma anında eklenir)
+ALT_RENK = {"Altın": "#f1c40f", "Gümüş": "#95a5a6", "Dolar": "#27ae60",
+            "Euro": "#8e44ad", "Faiz": "#e67e22"}
+
 RISKSIZ = "BIL"      # kısa vadeli hazine ETF'i, Sharpe'ın risksiz oranı
 GOSTERGE = "^GSPC"   # S&P 500
+NASDAQ = "^IXIC"     # Nasdaq Composite
+
+# Alternatif yatırım karşılaştırması için (TL/USD bazlı)
+ALT_TICKER = ("GC=F", "SI=F", "TRY=X", "EURTRY=X", "EURUSD=X", "BIL")
 
 
 @st.cache_data
@@ -81,6 +104,20 @@ def gecmis_yukle():
     return pd.read_parquet(yol) if yol.exists() else None
 
 
+@st.cache_data
+def alt_fiyat_yukle():
+    """Alternatif varlık fiyatları (altın, gümüş, USD/TRY, EUR...)."""
+    df = yf.download(list(ALT_TICKER), start="2019-01-01",
+                     auto_adjust=True, progress=False)["Close"]
+    return df.dropna(how="all")
+
+
+@st.cache_data
+def sektor_yukle():
+    """Ticker -> Türkçe sektör sözlüğü. Yoksa boş."""
+    return sektorler.yukle()
+
+
 # --- Kenar çubuğu ---
 st.sidebar.title("ETF Analiz")
 tema = st.sidebar.radio("Tema", [t for t in FONLAR if FONLAR[t]])
@@ -88,8 +125,15 @@ fon = st.sidebar.radio("Fon", list(FONLAR[tema].keys()))
 donem_adi = st.sidebar.selectbox("Dönem", list(DONEMLER.keys()), index=1)
 gun = DONEMLER[donem_adi]
 
-st.sidebar.caption("Tüm getiriler USD bazlıdır.")
+st.sidebar.caption("Fon metrikleri USD bazlıdır.")
 st.sidebar.caption(f"Sharpe'ta risksiz oran: {RISKSIZ}")
+
+st.sidebar.divider()
+faiz_yillik = st.sidebar.number_input(
+    "Yıllık TL faizi (%)", min_value=0.0, max_value=200.0,
+    value=45.0, step=1.0,
+    help="Alternatif karşılaştırmada 'faiz' için varsayım. "
+         "Piyasa verisi değil, güncel mevduat oranına göre değiştirin.")
 
 detay_sekme, karsilastirma_sekme, hisse_sekme, dxyz_sekme = st.tabs(
     ["Fon detayı", "Karşılaştırma", "Hisse bazlı", "DXYZ — özel şirketler"])
@@ -109,7 +153,8 @@ with detay_sekme:
         eski = tuple(sorted(set(gec_tum[gec_tum["fund"] == fon]["ticker"])
                             - set(h["ticker"])))
 
-    fiyat = fiyat_yukle(tuple(h["ticker"]) + eski + (fon, GOSTERGE, RISKSIZ))
+    fiyat = fiyat_yukle(tuple(h["ticker"]) + eski
+                        + (fon, GOSTERGE, NASDAQ, RISKSIZ))
     getiri = donem_getirisi(fiyat, gun)
 
     st.title(f"{fon} — {donem_adi}")
@@ -196,16 +241,61 @@ with detay_sekme:
                        showlegend=False, coloraxis_showscale=False)
     st.plotly_chart(fig2, use_container_width=True)
 
-    # --- Drawdown ---
-    st.subheader("Zirveden düşüş")
+    # --- Endeks karşılaştırması (S&P 500 + Nasdaq) ---
+    st.subheader("Endekslere karşı fiyat")
+    st.caption(f"{donem_adi} başından itibaren yüzde getiri. USD bazlı.")
     fig3 = go.Figure()
-    for t, ad, renk in [(fon, fon, "#1f77b4"), (GOSTERGE, "S&P 500", "#999999")]:
-        dd = drawdown_serisi(fiyat[t].iloc[-gun:])
-        fig3.add_trace(go.Scatter(x=dd.index, y=dd, name=ad,
-                                  line=dict(color=renk, width=2)))
-    fig3.update_layout(height=400, yaxis_title="Zirveye göre (%)",
+    for t, ad, renk in [(fon, fon, "#1f77b4"),
+                        (GOSTERGE, "S&P 500", "#e67e22"),
+                        (NASDAQ, "Nasdaq", "#999999")]:
+        if t not in fiyat:
+            continue
+        s = fiyat[t].iloc[-gun:].dropna()
+        if len(s) < 2:
+            continue
+        fig3.add_trace(go.Scatter(
+            x=s.index, y=(s / s.iloc[0] - 1) * 100, name=ad,
+            line=dict(color=renk, width=2)))
+    fig3.update_layout(height=400, yaxis_title=f"{donem_adi} başından (%)",
                        hovermode="x unified", margin=dict(t=10))
     st.plotly_chart(fig3, use_container_width=True)
+
+    # --- Alternatif yatırımlara karşı (TL / USD) ---
+    st.divider()
+    st.subheader("Alternatif yatırımlara karşı")
+    para = st.radio("Para birimi", ["TL bazlı", "USD bazlı"],
+                    horizontal=True, key="alt_para")
+    para_kodu = "TL" if para.startswith("TL") else "USD"
+
+    alt_fiyat = alt_fiyat_yukle()
+    # fon fiyatını alt varlıklarla aynı çerçevede birleştir
+    alt_cerceve = alt_fiyat.join(fiyat[[fon]], how="outer")
+    alt_df = alternatif_getiriler(
+        alt_cerceve, fon, para=para_kodu,
+        faiz_yillik=faiz_yillik / 100, donemler=DONEMLER_ALT)
+
+    if para_kodu == "TL":
+        st.caption(f"Lira bazlı: USD varlıklar USD/TRY ile çevrildi. "
+                   f"'Faiz' = yıllık %{faiz_yillik:.0f} varsayımı "
+                   "(piyasa verisi değil).")
+    else:
+        st.caption("USD bazlı: 'dolar' baz para olduğu için yok; "
+                   "faiz = ABD hazine bonosu (BIL).")
+
+    # dönem sırası korunur, fonun kendi barı koyu renkte vurgulanır
+    alt_df["donem"] = pd.Categorical(alt_df["donem"],
+                                     list(DONEMLER_ALT), ordered=True)
+    renk_haritasi = dict(ALT_RENK)
+    renk_haritasi[fon] = "#1f77b4"
+    sira_varlik = [fon] + [v for v in ALT_RENK if v in alt_df["varlik"].values]
+    figa = px.bar(alt_df.sort_values("donem"), x="donem", y="getiri",
+                  color="varlik", barmode="group",
+                  category_orders={"varlik": sira_varlik},
+                  color_discrete_map=renk_haritasi,
+                  labels={"donem": "", "getiri": "Getiri (%)", "varlik": ""})
+    figa.update_layout(height=430, margin=dict(t=10),
+                       legend=dict(orientation="h", y=1.12))
+    st.plotly_chart(figa, use_container_width=True)
 
 
 # =====================================================================
@@ -269,7 +359,7 @@ with karsilastirma_sekme:
     # --- Ortak hisseler ---
     st.subheader("Hepsinde bulunan hisseler")
     ortak = ortak_hisseler(hepsi)
-    st.caption(f"{len(ortak)} hisse üç fonda da var. "
+    st.caption(f"{len(ortak)} hisse {len(hepsi)} fonun hepsinde var. "
                "Ağırlık farkı fonların nasıl ayrıştığını gösterir.")
     st.dataframe(ortak.round(2), use_container_width=True)
 
@@ -310,19 +400,50 @@ with hisse_sekme:
 
     st.divider()
 
-    # --- tüm matris ---
-    st.subheader("Ağırlık matrisi")
-    st.caption("Boş hücre: hisse o fonda yok. "
-               "Toplam ağırlığa göre sıralı.")
+    # --- Fon × Sektör dağılımı ---
+    harita = sektor_yukle()
+    if not harita:
+        st.info("Sektör haritası yok — `python3 sektorler.py` ile üretilebilir.")
+    else:
+        st.subheader("Fonların sektör dağılımı")
+        st.caption("Her fon ağırlığının sektörlere dağılımı (%). "
+                   "Fonların karakterini gösterir: yarı iletken mi, "
+                   "yazılım mı, havacılık mı ağırlıklı.")
 
-    sirali = matris.loc[matris.sum(axis=1).sort_values(ascending=False).index]
-    kac_fon = matris.notna().sum(axis=1)
+        fs = fon_sektor_agirliklari(hepsi_fon, harita)   # sektör × fon
+        fs = fs.loc[fs.sum(axis=1).sort_values(ascending=False).index]
 
-    sadece_ortak = st.checkbox("Sadece birden fazla fonda olanlar", value=False)
-    if sadece_ortak:
-        sirali = sirali[kac_fon[sirali.index] > 1]
+        figs = px.imshow(fs, text_auto=".0f", aspect="auto",
+                         color_continuous_scale=["#ffffff", "#1f77b4"],
+                         labels=dict(color="Ağırlık %"))
+        figs.update_layout(height=60 + 40 * len(fs), margin=dict(t=10),
+                           coloraxis_showscale=False, xaxis_side="top")
+        st.plotly_chart(figs, use_container_width=True)
 
-    st.dataframe(sirali.round(2), use_container_width=True, height=420)
+        st.divider()
+
+        # --- Sektör seçici: o sektördeki hisseler ---
+        st.subheader("Sektöre göre hisseler")
+        sektor_sec = st.selectbox("Sektör", list(fs.index))
+
+        # long tablo: (ticker, fon, ağırlık) sadece seçili sektör
+        kayit = []
+        for f, hh in hepsi_fon.items():
+            for t, w in zip(hh["ticker"], hh["weight"]):
+                if harita.get(t, "Diğer") == sektor_sec:
+                    kayit.append({"ticker": t, "fon": f, "weight": w})
+        if not kayit:
+            st.info("Bu sektörde hisse yok.")
+        else:
+            uzun = pd.DataFrame(kayit)
+            piv = (uzun.pivot_table(index="ticker", columns="fon",
+                                    values="weight", aggfunc="sum")
+                       .fillna(0.0))
+            piv = piv.loc[piv.sum(axis=1).sort_values(ascending=False).index]
+            st.caption(f"{sektor_sec}: {len(piv)} hisse. "
+                       "Değerler o fondaki ağırlık (%).")
+            st.dataframe(piv.round(2), use_container_width=True,
+                         height=min(420, 60 + 36 * len(piv)))
 
 
 # =====================================================================
