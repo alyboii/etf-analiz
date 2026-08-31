@@ -6,7 +6,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-from parsers import parse_vaneck, parse_ishares, parse_spdr
+from parsers import (parse_vaneck, parse_ishares, parse_spdr,
+                     parse_invesco, parse_tema)
 from metrikler import (donem_getirisi, yogunlasma, katki,
                        risk_metrikleri, drawdown_serisi,
                        risksiz_gunluk_oran, ortusme, ortak_hisseler,
@@ -19,9 +20,15 @@ FONLAR = {
         "SMH":  (parse_vaneck,  "data/raw/SMH_asof_20260827.xlsx"),
         "SOXX": (parse_ishares, "data/raw/SOXX_holdings.csv"),
         "XSD":  (parse_spdr,    "data/raw/holdings-daily-us-en-xsd.xlsx"),
+        "SMHX": (parse_vaneck,  "data/raw/SMHX_asof_20260828.xlsx"),
+        "SOXQ": (parse_invesco,
+                 "data/raw/invesco_phlx_semiconductor_etf-"
+                 "Complete_Holdings.csv"),
     },
     "Uzay": {
         "ROKT": (parse_spdr, "data/raw/holdings-daily-us-en-rokt.xlsx"),
+        "NASA": (parse_tema, "data/raw/NASA-holdings-08282026.csv"),
+        # UFO: procureetfs.com Cloudflare arkasında; dosya elle indirilmeli
     },
 }
 
