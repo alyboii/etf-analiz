@@ -10,7 +10,7 @@ from parsers import parse_vaneck, parse_ishares, parse_spdr
 from metrikler import (donem_getirisi, yogunlasma, katki,
                        risk_metrikleri, drawdown_serisi,
                        risksiz_gunluk_oran, ortusme, ortak_hisseler,
-                       katki_donem_basi)
+                       katki_donem_basi, hisse_siralamasi)
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
 
@@ -20,10 +20,13 @@ FONLAR = {
         "SOXX": (parse_ishares, "data/raw/SOXX_holdings.csv"),
         "XSD":  (parse_spdr,    "data/raw/holdings-daily-us-en-xsd.xlsx"),
     },
-    "Uzay": {},
+    "Uzay": {
+        "ROKT": (parse_spdr, "data/raw/holdings-daily-us-en-rokt.xlsx"),
+    },
 }
 
-DONEMLER = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252}
+DONEMLER = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252,
+            "3 yıl": 756, "5 yıl": 1260}
 
 RISKSIZ = "BIL"      # kısa vadeli hazine ETF'i, Sharpe'ın risksiz oranı
 GOSTERGE = "^GSPC"   # S&P 500
@@ -38,6 +41,23 @@ def holdings_yukle(fon, tema):
 @st.cache_data
 def tum_holdings(tema):
     return {f: holdings_yukle(f, tema) for f in FONLAR[tema]}
+
+
+@st.cache_data
+def her_fon():
+    """Tüm temalardaki bütün fonlar — hisse bazlı sıralama için."""
+    return {f: holdings_yukle(f, t)
+            for t in FONLAR for f in FONLAR[t]}
+
+
+@st.cache_data
+def dxyz_yukle():
+    """Destiny Tech100 pozisyonları (SEC N-PORT). Ağ hatasında None."""
+    try:
+        from gecmis import dxyz_holdings
+        return dxyz_holdings()
+    except Exception as e:
+        return ("hata", str(e))
 
 
 @st.cache_data
@@ -64,7 +84,8 @@ gun = DONEMLER[donem_adi]
 st.sidebar.caption("Tüm getiriler USD bazlıdır.")
 st.sidebar.caption(f"Sharpe'ta risksiz oran: {RISKSIZ}")
 
-detay_sekme, karsilastirma_sekme = st.tabs(["Fon detayı", "Karşılaştırma"])
+detay_sekme, karsilastirma_sekme, hisse_sekme, dxyz_sekme = st.tabs(
+    ["Fon detayı", "Karşılaştırma", "Hisse bazlı", "DXYZ — özel şirketler"])
 
 
 # =====================================================================
@@ -244,3 +265,129 @@ with karsilastirma_sekme:
     st.caption(f"{len(ortak)} hisse üç fonda da var. "
                "Ağırlık farkı fonların nasıl ayrıştığını gösterir.")
     st.dataframe(ortak.round(2), use_container_width=True)
+
+
+# =====================================================================
+# Hisse bazlı — tüm temalardaki fonlar
+# =====================================================================
+with hisse_sekme:
+    st.title("Hisse bazlı sıralama")
+
+    hepsi_fon = her_fon()
+    matris = ortak_hisseler(hepsi_fon, en_az=1)
+
+    st.caption(f"{len(matris)} hisse, {len(hepsi_fon)} fon "
+               f"({', '.join(hepsi_fon)}). Tema fark etmeksizin hepsi.")
+
+    # --- tek hisse: hangi fon en çok tutuyor ---
+    varsayilan = "NVDA" if "NVDA" in matris.index else matris.index[0]
+    secili = st.selectbox("Hisse", list(matris.index),
+                          index=list(matris.index).index(varsayilan))
+
+    sira = hisse_siralamasi(hepsi_fon, secili)
+    if sira.empty:
+        st.info("Bu hisse hiçbir fonda yok.")
+    else:
+        en = sira.index[0]
+        st.metric(f"{secili} — en çok tutan fon",
+                  f"{en}  %{sira.iloc[0]:.2f}")
+
+        figh = px.bar(x=sira.values, y=sira.index, orientation="h",
+                      labels={"x": "Ağırlık (%)", "y": ""},
+                      text=[f"%{v:.2f}" for v in sira.values])
+        figh.update_traces(marker_color="#1f77b4", textposition="outside")
+        figh.update_layout(height=90 + 45 * len(sira),
+                           yaxis=dict(autorange="reversed"),
+                           margin=dict(t=10, r=60))
+        st.plotly_chart(figh, use_container_width=True)
+
+    st.divider()
+
+    # --- tüm matris ---
+    st.subheader("Ağırlık matrisi")
+    st.caption("Boş hücre: hisse o fonda yok. "
+               "Toplam ağırlığa göre sıralı.")
+
+    sirali = matris.loc[matris.sum(axis=1).sort_values(ascending=False).index]
+    kac_fon = matris.notna().sum(axis=1)
+
+    sadece_ortak = st.checkbox("Sadece birden fazla fonda olanlar", value=False)
+    if sadece_ortak:
+        sirali = sirali[kac_fon[sirali.index] > 1]
+
+    st.dataframe(sirali.round(2), use_container_width=True, height=420)
+
+
+# =====================================================================
+# DXYZ — özel şirket maruziyeti
+# =====================================================================
+with dxyz_sekme:
+    st.title("DXYZ — Destiny Tech100")
+
+    sonuc = dxyz_yukle()
+    if sonuc[0] == "hata":
+        st.error(f"SEC verisi alınamadı: {sonuc[1]}")
+    else:
+        donem, dx = sonuc
+        st.caption(f"SEC N-PORT dönemi: {donem} — veri üç aylık ve "
+                   "~60 gün gecikmeli.")
+
+        st.warning(
+            "DXYZ bir ETF değil, kapalı uçlu fon. Pozisyonları özel "
+            "şirketlere maruziyet veren SPV/LLC yapıları ve **ticker'ları "
+            "yok** — bu yüzden hisse bazlı getiri, katkı ve risk metrikleri "
+            "hesaplanamıyor. Aşağıda sadece isim ve ağırlık var.")
+
+        nakit = dx[dx["nakit"]]["weight"].sum()
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Pozisyon", len(dx))
+        d2.metric("Nakit / para piyasası", f"%{nakit:.1f}")
+        d3.metric("Özel şirket maruziyeti", f"%{100 - nakit:.1f}")
+
+        # aynı şirket birden çok SPV'de olabiliyor (ör. SpaceX 3 kez);
+        # isim temizliği gecmis._sirket_adi içinde yapılıyor
+        birlesik = (dx[~dx["nakit"]].groupby("sirket")["weight"].sum()
+                      .sort_values(ascending=False))
+
+        st.subheader("Şirket bazında maruziyet")
+        st.caption("Aynı şirkete birden fazla SPV üzerinden yatırım "
+                   "yapılabiliyor; burada toplanmış hâli.")
+
+        ust = birlesik.head(15)
+        figd = px.bar(x=ust.values, y=ust.index, orientation="h",
+                      labels={"x": "Fon içindeki ağırlık (%)", "y": ""},
+                      text=[f"%{v:.2f}" for v in ust.values])
+        figd.update_traces(
+            marker_color=["#c0392b" if "Anthropic" in s else "#1f77b4"
+                          for s in ust.index],
+            textposition="outside")
+        figd.update_layout(height=90 + 34 * len(ust),
+                           yaxis=dict(autorange="reversed"),
+                           margin=dict(t=10, r=70))
+        st.plotly_chart(figd, use_container_width=True)
+
+        with st.expander("Ham pozisyonlar (SPV isimleriyle)"):
+            st.dataframe(
+                dx[["name", "sirket", "weight", "varlik_tipi", "nakit"]]
+                  .round(3),
+                use_container_width=True)
+
+        # --- fon fiyatı (DXYZ borsada işlem görüyor) ---
+        st.subheader(f"DXYZ fiyat performansı — {donem_adi}")
+        dxf = fiyat_yukle(("DXYZ", GOSTERGE))
+        if "DXYZ" in dxf and dxf["DXYZ"].notna().any():
+            p = dxf.iloc[-gun:]
+            figp = go.Figure()
+            for t, ad, renk in [("DXYZ", "DXYZ", "#c0392b"),
+                                (GOSTERGE, "S&P 500", "#999999")]:
+                s = p[t].dropna()
+                if len(s) < 2:
+                    continue
+                figp.add_trace(go.Scatter(
+                    x=s.index, y=(s / s.iloc[0] - 1) * 100, name=ad,
+                    line=dict(color=renk, width=2)))
+            figp.update_layout(height=380, yaxis_title=f"{donem_adi} (%)",
+                               hovermode="x unified", margin=dict(t=10))
+            st.plotly_chart(figp, use_container_width=True)
+        else:
+            st.info("DXYZ fiyat verisi alınamadı.")

@@ -158,3 +158,15 @@ def katki_donem_basi(gecmis, fiyat_df, fon, gun):
     d["katki"] = (d["weight"] / 100) * d["getiri"]
 
     return d.sort_values("katki", ascending=False), w_tarih, veri_yok
+
+
+def hisse_siralamasi(holdings, ticker):
+    """Bir hisseyi en çok tutan fonlar, ağırlığa göre sıralı.
+
+    holdings: {fon_adi: holdings DataFrame}
+    Hisseyi tutmayan fonlar sonuçta yer almaz.
+    """
+    tablo = ortak_hisseler(holdings, en_az=1)
+    if ticker not in tablo.index:
+        return pd.Series(dtype=float)
+    return tablo.loc[ticker].dropna().sort_values(ascending=False)

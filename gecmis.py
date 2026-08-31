@@ -38,6 +38,14 @@ SEMA = ["ticker", "name", "shares", "market_value", "weight",
         "sector", "location", "figi", "cusip", "fund", "date", "kaynak"]
 
 
+def _sayi(x):
+    """N-PORT sayısal alanı; "N/A" ve boş değerler için NaN."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def _cek(url, ua=UA, deneme=3):
     for i in range(deneme):
         try:
@@ -100,9 +108,17 @@ def nport_listesi(fon, adet=40):
     return tum
 
 
-def nport_holdings(fon, accession):
-    """N-PORT XML'inden hisse pozisyonları. (donem, DataFrame) döner."""
-    cik = FON_META[fon]["cik"]
+def nport_holdings(fon, accession, varlik_tipleri=("EC",), cik=None):
+    """N-PORT XML'inden pozisyonlar. (donem, DataFrame) döner.
+
+    varlik_tipleri: tutulacak assetCat değerleri. Varsayılan sadece "EC"
+      (adi hisse) — ETF geçmişi için doğru davranış.
+      None verilirse hiçbir filtre uygulanmaz; DXYZ gibi fonlarda pozisyonlar
+      SPV/LLC olduğu için assetCat ya boş ya "EP" gelir, filtre uygulanırsa
+      Anthropic dahil çoğu pozisyon düşer.
+    cik: FON_META'da olmayan fonlar için doğrudan verilebilir.
+    """
+    cik = cik or FON_META[fon]["cik"]
     a = accession.replace("-", "")
     yol = ONBELLEK / fon / f"nport_{a}.xml"
 
@@ -119,16 +135,19 @@ def nport_holdings(fon, accession):
     rows = []
     for b in re.findall(r"<invstOrSec>(.*?)</invstOrSec>", x, re.S):
         al = lambda t: (re.search(rf"<{t}>([^<]*)", b) or [None, None])[1]
-        if al("assetCat") != "EC":      # sadece hisse
+        tip = al("assetCat")
+        if varlik_tipleri is not None and tip not in varlik_tipleri:
             continue
         isin = re.search(r'<isin value="([^"]*)"', b)
         rows.append({
             "name": html.unescape(al("name") or ""),
             "cusip": al("cusip"),
             "isin": isin.group(1) if isin else None,
-            "shares": float(al("balance") or 0),
-            "market_value": float(al("valUSD") or 0),
-            "weight": float(al("pctVal") or 0),
+            # özel şirket pozisyonlarında "N/A" gelebiliyor
+            "shares": _sayi(al("balance")),
+            "market_value": _sayi(al("valUSD")),
+            "weight": _sayi(al("pctVal")),
+            "varlik_tipi": tip or "",
         })
 
     d = pd.DataFrame(rows)
@@ -315,3 +334,59 @@ def topla(yil=5, gunluk_fonlar=("SOXX",), log=print):
 
 if __name__ == "__main__":
     topla()
+
+
+# -------------------------------------------------------------------- DXYZ
+
+DXYZ_CIK = 1843974          # Destiny Tech100 Inc. (kapalı uçlu fon)
+NAKIT_TIPLERI = ("STIV",)   # kısa vadeli hazine/para piyasası
+
+
+def dxyz_holdings():
+    """Destiny Tech100 (DXYZ) en son N-PORT pozisyonları.
+
+    ETF'lerden farklı: pozisyonlar özel şirketlere maruziyet veren SPV/LLC
+    yapıları, ticker yok. Bu yüzden fiyat/getiri/katkı hesaplanamaz —
+    sadece isim + ağırlık + tip.
+
+    (donem, DataFrame) döner; "nakit" kolonu para piyasası satırını işaretler.
+    """
+    sub = json.loads(_cek(
+        f"https://data.sec.gov/submissions/CIK{DXYZ_CIK:010d}.json").decode())
+    r = sub["filings"]["recent"]
+    acc = next(a for f, a in zip(r["form"], r["accessionNumber"])
+               if f.startswith("NPORT"))
+
+    donem, d = nport_holdings("DXYZ", acc, varlik_tipleri=None, cik=DXYZ_CIK)
+    d["nakit"] = d["varlik_tipi"].isin(NAKIT_TIPLERI)
+
+    d["sirket"] = d["name"].map(_sirket_adi)
+    return donem, d.sort_values("weight", ascending=False).reset_index(drop=True)
+
+
+# enstrüman tanımlarını isimden ayıklamak için: aynı şirket farklı hisse
+# sınıfı / seri ile birden çok satırda geçiyor (OpenAI, Klarna, Axiom Space...)
+_ENSTRUMAN = re.compile(
+    r"\s*[,.]?\s*(?:"
+    r"Class\s+[A-Z0-9-]+|"
+    r"Series\s+[A-Z0-9-]+|"
+    r"Common|Preferred|Ordinary|"
+    r"Profit\s+Participation\s+Units|Stock|Shares|Units|"
+    r"subordinated\s+convertible\s+promissory\s+note.*"
+    r")\b", re.I)
+
+
+def _sirket_adi(ad):
+    """SPV/enstrüman gürültüsünü ayıklayıp asıl şirket adını döndürür.
+
+    "Magnitude ANC III, LLC (economic exposure to Anthropic PBC Series B
+    Preferred Shares)" -> "Anthropic PBC"
+    """
+    m = re.search(r"(?:exposure to|invested in)\s+(.+?)\)?$", ad, re.I)
+    s = m.group(1) if m else ad.split(" - ")[0]
+
+    onceki = None
+    while onceki != s:                 # ekler zincirleme olabiliyor
+        onceki = s
+        s = _ENSTRUMAN.sub("", s).strip(" .,)")
+    return s
