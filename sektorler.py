@@ -1,9 +1,11 @@
-"""Ticker -> Türkçe sektör haritası.
+"""Ticker künye haritası: Türkçe sektör + trailing F/K.
 
 Tüm fonlardaki benzersiz hisseler için sektör belirler ve
-data/sektorler.parquet'e yazar. Kaynak: öncelikle yfinance `industry`
-(ABD + yabancı borsalar için temiz ve granüler), olmazsa holdings
-dosyasındaki sektör, o da yoksa "Diğer".
+data/sektorler.parquet'e yazar. Sektör kaynağı: öncelikle yfinance
+`industry` (ABD + yabancı borsalar için temiz ve granüler), olmazsa
+holdings dosyasındaki sektör, o da yoksa "Diğer". Aynı yfinance
+çağrısından trailing (TTM) F/K da alınır — fon seviyesi F/K bundan
+hesaplanır (bkz. metrikler.agirlikli_fk), ek ağ maliyeti yoktur.
 
 Uygulama bu parquet'i okur; ağ çağrısı yalnızca bu dosya üretilirken yapılır.
 Yeni fon/ticker eklenince yeniden çalıştır: python3 sektorler.py
@@ -82,10 +84,11 @@ def topla(log=print):
 
     rows = []
     for i, t in enumerate(tickerlar, 1):
-        industry = None
+        industry = trailing_pe = None
         try:
             info = yf.Ticker(t).info
             industry = info.get("industry")
+            trailing_pe = info.get("trailingPE")   # zarar edende gelmez
         except Exception:
             pass
         kaynak_sektor = ticker_sektor.get(t)
@@ -94,15 +97,27 @@ def topla(log=print):
             "industry": industry,
             "kaynak_sektor": kaynak_sektor,
             "sektor": _kova(industry, kaynak_sektor),
+            "trailing_pe": trailing_pe,
         })
         if i % 25 == 0:
             log(f"  {i}/{len(tickerlar)}")
         time.sleep(0.15)
 
     df = pd.DataFrame(rows)
+
+    # Ağ tamamen kapalıysa her çağrı sessizce yutulur ve elimizde boş bir
+    # tablo kalır; bunu yazmak diskteki iyi haritayı yok eder.
+    if df["industry"].isna().all() and df["trailing_pe"].isna().all():
+        raise RuntimeError(
+            "yfinance'ten hiçbir ticker için veri gelmedi (ağ engelli?) — "
+            f"{CIKTI} korunuyor, üzerine boş veri yazılmadı.")
+
     CIKTI.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(CIKTI, index=False)
     log(f"\nyazıldı: {CIKTI} ({len(df)} ticker)")
+    pe_var = df["trailing_pe"].notna().sum()
+    log(f"trailing F/K: {pe_var}/{len(df)} ticker (gerisi zarar ediyor "
+        "ya da verisi yok)")
     log("\nsektör dağılımı:")
     log(df["sektor"].value_counts().to_string())
     return df
@@ -114,6 +129,22 @@ def yukle():
         return {}
     df = pd.read_parquet(CIKTI)
     return dict(zip(df["ticker"], df["sektor"]))
+
+
+def temeller():
+    """Ticker -> trailing F/K sözlüğü. Parquet yoksa ya da eskiyse boş döner.
+
+    Kolon kontrolü şart: trailing_pe eklenmeden önce üretilmiş bir parquet
+    diskte duruyor olabilir, o durumda uygulama patlamak yerine F/K'yı
+    boş göstersin.
+    """
+    if not CIKTI.exists():
+        return {}
+    df = pd.read_parquet(CIKTI)
+    if "trailing_pe" not in df.columns:
+        return {}
+    d = df.dropna(subset=["trailing_pe"])
+    return dict(zip(d["ticker"], d["trailing_pe"]))
 
 
 if __name__ == "__main__":

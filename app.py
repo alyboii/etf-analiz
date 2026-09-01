@@ -13,7 +13,8 @@ from metrikler import (donem_getirisi, yogunlasma, katki,
                        risk_metrikleri, risksiz_gunluk_oran,
                        ortusme, ortak_hisseler, katki_donem_basi,
                        hisse_siralamasi, alternatif_getiriler,
-                       fon_sektor_agirliklari)
+                       fon_sektor_agirliklari, fiyat_istatistikleri,
+                       agirlikli_fk, bicim_buyuk, bicim_fiyat)
 import sektorler
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
@@ -118,6 +119,29 @@ def sektor_yukle():
     return sektorler.yukle()
 
 
+@st.cache_data
+def temel_yukle():
+    """Ticker -> trailing F/K. Yoksa boş."""
+    return sektorler.temeller()
+
+
+@st.cache_data(ttl=3600)
+def fon_bilgi_yukle(tickerlar):
+    """Fon tickerları için yfinance künyesi. Ağ hatasında boş sözlük.
+
+    52 hafta aralığı, ortalama hacim ve net varlık buradan gelir. Diğer
+    yükleyicilerin aksine TTL var: bunlar diskteki statik dosya değil canlı
+    piyasa rakamları, süresiz önbelleklenirse uzun oturumda bayatlar.
+    """
+    out = {}
+    for t in tickerlar:
+        try:
+            out[t] = yf.Ticker(t).info or {}
+        except Exception:
+            out[t] = {}
+    return out
+
+
 # --- Kenar çubuğu ---
 st.sidebar.title("ETF Analiz")
 tema = st.sidebar.radio("Tema", [t for t in FONLAR if FONLAR[t]])
@@ -159,6 +183,35 @@ with detay_sekme:
 
     st.title(f"{fon} — {donem_adi}")
     st.caption(f"Holdings tarihi: {h['date'].iloc[0].date()}")
+
+    # --- Fon künyesi ---
+    # Tema geneli çekilir: karşılaştırma sekmesi de aynı önbellek girdisini
+    # kullanır, fonlar arası gezinirken yeniden ağa çıkılmaz.
+    bilgi = fon_bilgi_yukle(tuple(FONLAR[tema])).get(fon, {})
+    fs = fiyat_istatistikleri(fiyat[fon], bilgi)
+    fk = agirlikli_fk(h, temel_yukle())
+
+    st.caption("Fon istatistikleri")
+    f1, f2, f3, f4, f5, f6 = st.columns(6)
+    f1.metric("52 hafta en yüksek", bicim_fiyat(fs["yuksek_52h"]))
+    f2.metric("52 hafta en düşük", bicim_fiyat(fs["dusuk_52h"]))
+    f3.metric("52h bandında konum",
+              "—" if fs["band_konum"] is None else f"%{fs['band_konum']:.0f}")
+    f4.metric("Ortalama hacim", bicim_buyuk(fs["ort_hacim"]))
+    f5.metric("Net varlık (AUM)", bicim_buyuk(bilgi.get("totalAssets"), "$"))
+    f6.metric("F/K (TTM)", "—" if fk["fk"] is None else f"{fk['fk']:.1f}")
+
+    if fk["fk"] is None:
+        st.caption("F/K için ticker temelleri yok — "
+                   "`python3 sektorler.py` ile üretilebilir.")
+    else:
+        st.caption(f"F/K: holdings ağırlıklı harmonik ortalama, "
+                   f"kapsam %{fk['kapsam']:.0f} "
+                   "(zarar eden ve verisi olmayan hisseler hariç)")
+    if fs["kaynak"] == "kapanış":
+        st.caption("52 hafta aralığı düzeltilmiş kapanıştan hesaplandı; "
+                   "temettü düzeltmesi nedeniyle aracı kurum ekranından "
+                   "farklı olabilir.")
 
     # --- Kimlik kartı ---
     y = yogunlasma(h)
@@ -310,10 +363,20 @@ with karsilastirma_sekme:
 
     # --- Yan yana tablo ---
     st.subheader("Fonlar yan yana")
+    bilgiler = fon_bilgi_yukle(tuple(hepsi))
+    pe_map = temel_yukle()
+
+    def _olcekle(x, olcek=1, basamak=1):
+        """Sayıysa ölçekleyip yuvarlar, yoksa None — hücre boş kalsın."""
+        return None if x is None or pd.isna(x) else round(x / olcek, basamak)
+
     satirlar = {}
     for f, hh in hepsi.items():
         y_f = yogunlasma(hh)
         r_f = risk_metrikleri(fon_fiyat[f].iloc[-gun:], risksiz)
+        b_f = bilgiler.get(f, {})
+        fs_f = fiyat_istatistikleri(fon_fiyat[f], b_f)
+        fk_f = agirlikli_fk(hh, pe_map)
         satirlar[f] = {
             "Hisse sayısı": y_f["hisse_sayisi"],
             "Etkin hisse": round(y_f["etkin_hisse"], 1),
@@ -325,8 +388,19 @@ with karsilastirma_sekme:
             "Volatilite %": round(r_f["volatilite"], 1),
             "Sharpe": round(r_f["sharpe"], 2),
             "Maks. düşüş %": round(r_f["max_dusus"], 1),
+            # 52h yüksek/düşük mutlak fiyat olduğu için tabloya girmiyor:
+            # fonlar arası kıyaslanabilir değil. Banddaki konum kıyaslanabilir.
+            "52h bandında %": _olcekle(fs_f["band_konum"], basamak=0),
+            "Ort. hacim (Mn)": _olcekle(fs_f["ort_hacim"], 1e6),
+            "AUM (Mr $)": _olcekle(b_f.get("totalAssets"), 1e9, 2),
+            "F/K (TTM)": _olcekle(fk_f["fk"]),
+            "F/K kapsam %": _olcekle(fk_f["kapsam"], basamak=0),
         }
-    st.dataframe(pd.DataFrame(satirlar), use_container_width=True)
+    # Tablo transpoze: her metrik bir satır. Yükseklik içeriğe göre verilir,
+    # yoksa varsayılan pencere son metrikleri kırpıyor.
+    tablo = pd.DataFrame(satirlar)
+    st.dataframe(tablo, use_container_width=True,
+                 height=(len(tablo) + 1) * 35 + 3)
 
     # --- Normalize performans ---
     st.subheader("Göreli performans")

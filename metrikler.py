@@ -35,6 +35,34 @@ def yogunlasma(df):
     }
 
 
+def agirlikli_fk(df, pe_map):
+    """Fonun F/K'sı: holdings F/K'larının ağırlıklı harmonik ortalaması.
+
+    Piyasa standardı budur (iShares, Vanguard, Morningstar, MSCI aynı
+    yöntemi kullanır): F/K = Σw / Σ(w / F/K), yalnızca pozitif F/K'lı
+    hisseler üzerinden. Aritmetik ortalama alınmaz — tek bir aşırı çarpan
+    sonucu ele geçirir; harmonik ortalama ise portföyün toplam kazanç
+    veriminin tersidir, o yüzden ağırlıklarla toplanabilir.
+
+    Zarar eden ya da verisi gelmeyen hisseler dışarıda kalır; ağırlığın ne
+    kadarının kapsandığı 'kapsam' (%) ile döner. Kapsam bilgisi olmadan
+    rakamı göstermek yanıltıcı olur.
+    """
+    if not pe_map:
+        return {"fk": None, "kapsam": 0.0}
+
+    d = df[["ticker", "weight"]].copy()
+    d["pe"] = d["ticker"].map(pe_map)
+    gecerli = d[d["pe"].notna() & (d["pe"] > 0)]
+
+    toplam, dahil = d["weight"].sum(), gecerli["weight"].sum()
+    if toplam <= 0 or dahil <= 0:
+        return {"fk": None, "kapsam": 0.0}
+
+    return {"fk": dahil / (gecerli["weight"] / gecerli["pe"]).sum(),
+            "kapsam": dahil / toplam * 100}
+
+
 def katki(df, getiri_serisi):
     """Katkı = güncel ağırlık × dönem getirisi.
 
@@ -66,6 +94,43 @@ def risk_metrikleri(seri, risksiz_gunluk=0.0):
         "max_dusus": dusus.min(),
         "sharpe": (fazla.mean() * 252) / (yillik_vol / 100) if yillik_vol else np.nan,
     }
+
+
+def fiyat_istatistikleri(seri, bilgi=None):
+    """52 haftalık fiyat aralığı, banddaki konum ve ortalama hacim.
+
+    yfinance künyesi (`yf.Ticker(x).info`) verilmişse yüksek/düşük oradan
+    okunur: bu değerler düzeltilmemiş fiyattan gelir, yani kullanıcının
+    aracı kurumunda gördüğü rakamla birebir aynıdır. Künye yoksa son 252
+    işlem gününün düzeltilmiş kapanışından hesaplanır — temettü düzeltmesi
+    yüzünden biraz farklı çıkar, 'kaynak' hangisi olduğunu söyler.
+
+    Hacim fiyat serisinde bulunmadığı için yalnızca künyeden gelir.
+    """
+    bilgi = bilgi or {}
+    seri = seri.dropna()
+
+    yuksek = bilgi.get("fiftyTwoWeekHigh")
+    dusuk = bilgi.get("fiftyTwoWeekLow")
+    fiyat = bilgi.get("regularMarketPrice") or bilgi.get("previousClose")
+    kaynak = "künye"
+
+    if yuksek is None or dusuk is None:
+        pencere = seri.iloc[-252:]
+        yuksek = pencere.max() if len(pencere) else None
+        dusuk = pencere.min() if len(pencere) else None
+        kaynak = "kapanış"
+    if fiyat is None and len(seri):
+        fiyat = seri.iloc[-1]
+
+    band = None
+    if not any(v is None or pd.isna(v) for v in (yuksek, dusuk, fiyat)):
+        if yuksek > dusuk:
+            band = (fiyat - dusuk) / (yuksek - dusuk) * 100
+
+    return {"yuksek_52h": yuksek, "dusuk_52h": dusuk, "fiyat": fiyat,
+            "band_konum": band, "ort_hacim": bilgi.get("averageVolume"),
+            "kaynak": kaynak}
 
 
 def drawdown_serisi(seri):
@@ -251,3 +316,30 @@ def fon_sektor_agirliklari(holdings, harita):
         s["sektor"] = s["ticker"].map(harita).fillna("Diğer")
         kayit[fon] = s.groupby("sektor")["weight"].sum()
     return pd.DataFrame(kayit).fillna(0.0)
+
+
+def bicim_fiyat(x):
+    """Fiyatı Türkçe ondalıkla yazar: 225.64 -> '$225,64'. Yoksa '—'."""
+    if x is None or pd.isna(x):
+        return "—"
+    return "$" + f"{x:,.2f}".translate(str.maketrans({",": ".", ".": ","}))
+
+
+def bicim_buyuk(x, birim=""):
+    """Büyük sayıyı Türkçe kısaltmayla yazar: 1.87e12 -> '1,87 T'.
+
+    Mn = milyon, Mr = milyar, T = trilyon; binlik ayırıcı nokta, ondalık
+    virgül. Veri yoksa '—' döner: eksik veri ekranda hata değil boşluktur.
+    """
+    if x is None or pd.isna(x):
+        return "—"
+
+    for esik, kisa in ((1e12, " T"), (1e9, " Mr"), (1e6, " Mn")):
+        if abs(x) >= esik:
+            metin = f"{x / esik:,.2f}" + kisa
+            break
+    else:
+        metin = f"{x:,.0f}"
+
+    metin = metin.translate(str.maketrans({",": ".", ".": ","}))
+    return f"{metin} {birim}".strip()
