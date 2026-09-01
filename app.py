@@ -51,16 +51,22 @@ DONEMLER = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252,
 # Alternatif karşılaştırma her zaman bu dört dönemi birlikte gösterir
 DONEMLER_ALT = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252}
 
-# Alternatif varlık renkleri (fon rengi çalışma anında eklenir)
+# Alternatif varlık renkleri (fon rengi çalışma anında eklenir).
+# Sözlük sırası grafikteki bar sırasıdır. Dokuz seri olduğu için renkler
+# ayrı tonlardan seçildi; Faiz eskiden turuncuydu, Bitcoin'in turuncusuyla
+# karıştığı için kırmızıya alındı (Faiz zaten piyasa verisi değil, bir
+# varsayım — mnemonik bir rengi yok).
 ALT_RENK = {"Altın": "#f1c40f", "Gümüş": "#95a5a6", "Dolar": "#27ae60",
-            "Euro": "#8e44ad", "Faiz": "#e67e22"}
+            "Euro": "#8e44ad", "Bitcoin": "#f7931a", "Ethereum": "#454a75",
+            "XRP": "#00b8d9", "Faiz": "#c0392b"}
 
 RISKSIZ = "BIL"      # kısa vadeli hazine ETF'i, Sharpe'ın risksiz oranı
 GOSTERGE = "^GSPC"   # S&P 500
 NASDAQ = "^IXIC"     # Nasdaq Composite
 
 # Alternatif yatırım karşılaştırması için (TL/USD bazlı)
-ALT_TICKER = ("GC=F", "SI=F", "TRY=X", "EURTRY=X", "EURUSD=X", "BIL")
+ALT_TICKER = ("GC=F", "SI=F", "TRY=X", "EURTRY=X", "EURUSD=X", "BIL",
+              "BTC-USD", "ETH-USD", "XRP-USD")
 
 
 @st.cache_data

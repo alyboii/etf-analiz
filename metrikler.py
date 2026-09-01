@@ -261,8 +261,11 @@ def alternatif_getiriler(fiyat_df, fon, para="TL", faiz_yillik=0.45,
     para="USD": her şey USD; euro=EUR/USD, faiz=BIL; "dolar" baz para
                 olduğu için çıkarılır.
 
-    fiyat_df: fon, GC=F, SI=F, TRY=X, EURTRY=X, EURUSD=X, BIL kolonlarını
-    içermeli. FX takvimi farklı olduğu için önce ffill uygulanır.
+    fiyat_df: fon, GC=F, SI=F, TRY=X, EURTRY=X, EURUSD=X, BIL ve
+    BTC-USD, ETH-USD, XRP-USD kolonlarını içermeli. FX takvimi farklı
+    olduğu için önce ffill uygulanır. Kripto 7/24 işlem görür; aşağıdaki
+    filtre onu da fonun işlem günlerine indirger, yani hafta sonu
+    hareketleri bir sonraki işlem gününde toplu olarak görünür.
     """
     donemler = donemler or {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252}
 
@@ -274,20 +277,26 @@ def alternatif_getiriler(fiyat_df, fon, para="TL", faiz_yillik=0.45,
     if para == "TL":
         usdtry = df["TRY=X"]
         varliklar = {
-            fon:      df[fon] * usdtry,
-            "Altın":  df["GC=F"] * usdtry,
-            "Gümüş":  df["SI=F"] * usdtry,
-            "Dolar":  usdtry,
-            "Euro":   df["EURTRY=X"],
+            fon:        df[fon] * usdtry,
+            "Altın":    df["GC=F"] * usdtry,
+            "Gümüş":    df["SI=F"] * usdtry,
+            "Dolar":    usdtry,
+            "Euro":     df["EURTRY=X"],
+            "Bitcoin":  df["BTC-USD"] * usdtry,
+            "Ethereum": df["ETH-USD"] * usdtry,
+            "XRP":      df["XRP-USD"] * usdtry,
         }
         faiz_var = True
     else:
         varliklar = {
-            fon:      df[fon],
-            "Altın":  df["GC=F"],
-            "Gümüş":  df["SI=F"],
-            "Euro":   df["EURUSD=X"],
-            "Faiz":   df["BIL"],
+            fon:        df[fon],
+            "Altın":    df["GC=F"],
+            "Gümüş":    df["SI=F"],
+            "Euro":     df["EURUSD=X"],
+            "Bitcoin":  df["BTC-USD"],
+            "Ethereum": df["ETH-USD"],
+            "XRP":      df["XRP-USD"],
+            "Faiz":     df["BIL"],
         }
         faiz_var = False
 
