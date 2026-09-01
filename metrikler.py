@@ -19,6 +19,28 @@ def donem_getirisi(fiyat_df, gun, min_oran=0.9):
     return getiri.where(yeterli)
 
 
+def yillik_getiriler(fiyat_df, min_kapsam=0.9):
+    """Takvim yılı bazında yüzde getiri (satır: yıl, kolon: ticker).
+
+    O yıl beklenen işlem günlerinin min_kapsam'ından az verisi olan hücre
+    NaN döner. Sonradan açılmış fonlarda (SMHX, CHAT) kuruluş yılı tam yıl
+    değildir; yan yana konunca tam yıllarla kıyaslanmış gibi görünür.
+
+    Beklenen gün sayısı, o yıl herhangi bir kolonda görülen en yüksek
+    gözlem sayısıdır — piyasa takvimini ayrıca bilmeye gerek kalmaz.
+    """
+    kayit = {}
+    for yil, p in fiyat_df.groupby(fiyat_df.index.year):
+        sayim = p.notna().sum()
+        bas = p.apply(lambda s: s.dropna().iloc[0] if s.notna().any() else np.nan)
+        son = p.apply(lambda s: s.dropna().iloc[-1] if s.notna().any() else np.nan)
+
+        getiri = (son / bas - 1) * 100
+        kayit[yil] = getiri.where(sayim >= sayim.max() * min_kapsam)
+
+    return pd.DataFrame(kayit).T
+
+
 def yogunlasma(df):
     """Tek bir fonun holdings tablosundan yoğunlaşma ölçüleri."""
     d = df.sort_values("weight", ascending=False)
@@ -94,6 +116,29 @@ def risk_metrikleri(seri, risksiz_gunluk=0.0):
         "max_dusus": dusus.min(),
         "sharpe": (fazla.mean() * 252) / (yillik_vol / 100) if yillik_vol else np.nan,
     }
+
+
+def yonetim_ucreti(bilgi):
+    """Fonun yıllık yönetim ücreti (%) ve değerin alındığı yfinance alanı.
+
+    yfinance ücreti tek bir alanda vermiyor, alanlar sırayla denenir.
+    Ayrıca aynı alan kimi fonda kesir (0.0035), kimi fonda yüzde (0.35)
+    olarak geliyor. Ayrım şöyle yapılır: kesir varsayılıp 100 ile çarpılır,
+    sonuç %3'ü aşıyorsa kaynak zaten yüzdeymiş demektir ve çarpan geri
+    alınır. Hiçbir ETF yılda %3 almaz, dolayısıyla ayrım her iki kaynak
+    biçimi için de doğru sonuç verir; yalnızca %0,03'ün altındaki bir
+    ücret yanlış okunurdu, o da bu fonlarda yok (en ucuzu SOXQ %0,19).
+
+    (None, None) döner: hiçbir alan dolu değilse.
+    """
+    for alan in ("netExpenseRatio", "annualReportExpenseRatio",
+                 "expenseRatio"):
+        d = (bilgi or {}).get(alan)
+        if d is None or pd.isna(d):
+            continue
+        yuzde = d * 100
+        return (yuzde / 100 if yuzde > 3 else yuzde), alan
+    return None, None
 
 
 def fiyat_istatistikleri(seri, bilgi=None):
@@ -325,6 +370,63 @@ def fon_sektor_agirliklari(holdings, harita):
         s["sektor"] = s["ticker"].map(harita).fillna("Diğer")
         kayit[fon] = s.groupby("sektor")["weight"].sum()
     return pd.DataFrame(kayit).fillna(0.0)
+
+
+def karisim_holdings(holdings, agirliklar):
+    """Fon karışımının birleşik portföyü (ticker, name, weight).
+
+    Her fonun hisse ağırlığı, fonun karışımdaki payıyla çarpılır ve ticker
+    bazında toplanır: iki fonda da bulunan hisse tek satırda birikir —
+    örtüşmenin somut karşılığı budur. agirliklar {fon: yüzde}; toplamı
+    100 olmak zorunda değil, normalize edilir.
+
+    Çıktı kolonları yogunlasma() ve fon_sektor_agirliklari() ile uyumlu.
+    """
+    toplam = sum(agirliklar.values())
+    if toplam <= 0:
+        return pd.DataFrame(columns=["ticker", "name", "weight"])
+
+    parcalar = []
+    for fon, pay in agirliklar.items():
+        d = holdings[fon][["ticker", "name", "weight"]].copy()
+        d["weight"] = d["weight"] * (pay / toplam)
+        parcalar.append(d)
+
+    birlesik = (pd.concat(parcalar, ignore_index=True)
+                  .groupby("ticker", as_index=False)
+                  .agg(name=("name", "first"), weight=("weight", "sum")))
+    return (birlesik.sort_values("weight", ascending=False)
+                    .reset_index(drop=True))
+
+
+def karisim_serisi(fiyat_df, agirliklar):
+    """Karışımın sentetik fiyat endeksi (100'den başlar).
+
+    Fonların günlük getirileri ağırlıkla toplanır, kümülatif çarpımla
+    endekse çevrilir. VARSAYIM: günlük yeniden dengeleme — her gün
+    ağırlıklar hedefe döner. Al-tut bir portföyde kazanan fonun payı
+    zamanla kendiliğinden büyür, sonuç bundan farklı çıkar.
+
+    Yalnızca bütün fonların verisi olan günler kullanılır; karışımda yeni
+    bir fon varsa seri onun kuruluşundan itibaren başlar.
+    """
+    toplam = sum(agirliklar.values())
+    if toplam <= 0:
+        return pd.Series(dtype=float)
+
+    fonlar = list(agirliklar)
+    p = fiyat_df[fonlar].dropna()
+    if len(p) < 2:
+        return pd.Series(dtype=float)
+
+    w = pd.Series({f: agirliklar[f] / toplam for f in fonlar})
+    karisim = (p.pct_change().dropna() * w).sum(axis=1)
+
+    # İlk gün 100 olarak eklenir: pct_change ilk satırı düşürüyor, o
+    # olmadan endeks bir gün geç başlar ve tek fonlu karışım bile o fonun
+    # getirisini birebir vermez.
+    bas = pd.Series([100.0], index=[p.index[0]])
+    return pd.concat([bas, 100 * (1 + karisim).cumprod()])
 
 
 def bicim_fiyat(x):

@@ -14,7 +14,9 @@ from metrikler import (donem_getirisi, yogunlasma, katki,
                        ortusme, ortak_hisseler, katki_donem_basi,
                        hisse_siralamasi, alternatif_getiriler,
                        fon_sektor_agirliklari, fiyat_istatistikleri,
-                       agirlikli_fk, bicim_buyuk, bicim_fiyat)
+                       agirlikli_fk, bicim_buyuk, bicim_fiyat,
+                       yonetim_ucreti, yillik_getiriler,
+                       karisim_holdings, karisim_serisi)
 import sektorler
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
@@ -165,8 +167,10 @@ faiz_yillik = st.sidebar.number_input(
     help="Alternatif karşılaştırmada 'faiz' için varsayım. "
          "Piyasa verisi değil, güncel mevduat oranına göre değiştirin.")
 
-detay_sekme, karsilastirma_sekme, hisse_sekme, dxyz_sekme = st.tabs(
-    ["Fon detayı", "Karşılaştırma", "Hisse bazlı", "DXYZ — özel şirketler"])
+(detay_sekme, karsilastirma_sekme, karisim_sekme,
+ hisse_sekme, dxyz_sekme) = st.tabs(
+    ["Fon detayı", "Karşılaştırma", "Portföy karışımı", "Hisse bazlı",
+     "DXYZ — özel şirketler"])
 
 
 # =====================================================================
@@ -196,16 +200,14 @@ with detay_sekme:
     bilgi = fon_bilgi_yukle(tuple(FONLAR[tema])).get(fon, {})
     fs = fiyat_istatistikleri(fiyat[fon], bilgi)
     fk = agirlikli_fk(h, temel_yukle())
+    ucret, _ = yonetim_ucreti(bilgi)
 
-    st.caption("Fon istatistikleri")
-    f1, f2, f3, f4, f5, f6 = st.columns(6)
-    f1.metric("52 hafta en yüksek", bicim_fiyat(fs["yuksek_52h"]))
-    f2.metric("52 hafta en düşük", bicim_fiyat(fs["dusuk_52h"]))
-    f3.metric("52h bandında konum",
-              "—" if fs["band_konum"] is None else f"%{fs['band_konum']:.0f}")
+    st.caption("Fon künyesi")
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("Yönetim ücreti", "—" if ucret is None else f"%{ucret:.2f}")
+    f2.metric("Net varlık (AUM)", bicim_buyuk(bilgi.get("totalAssets"), "$"))
+    f3.metric("F/K (TTM)", "—" if fk["fk"] is None else f"{fk['fk']:.1f}")
     f4.metric("Ortalama hacim", bicim_buyuk(fs["ort_hacim"]))
-    f5.metric("Net varlık (AUM)", bicim_buyuk(bilgi.get("totalAssets"), "$"))
-    f6.metric("F/K (TTM)", "—" if fk["fk"] is None else f"{fk['fk']:.1f}")
 
     if fk["fk"] is None:
         st.caption("F/K için ticker temelleri yok — "
@@ -214,6 +216,14 @@ with detay_sekme:
         st.caption(f"F/K: holdings ağırlıklı harmonik ortalama, "
                    f"kapsam %{fk['kapsam']:.0f} "
                    "(zarar eden ve verisi olmayan hisseler hariç)")
+
+    st.caption("52 hafta")
+    h1, h2, h3 = st.columns(3)
+    h1.metric("En yüksek", bicim_fiyat(fs["yuksek_52h"]))
+    h2.metric("En düşük", bicim_fiyat(fs["dusuk_52h"]))
+    h3.metric("Bandda konum",
+              "—" if fs["band_konum"] is None else f"%{fs['band_konum']:.0f}")
+
     if fs["kaynak"] == "kapanış":
         st.caption("52 hafta aralığı düzeltilmiş kapanıştan hesaplandı; "
                    "temettü düzeltmesi nedeniyle aracı kurum ekranından "
@@ -384,6 +394,7 @@ with karsilastirma_sekme:
         fs_f = fiyat_istatistikleri(fon_fiyat[f], b_f)
         fk_f = agirlikli_fk(hh, pe_map)
         satirlar[f] = {
+            "Yönetim ücreti %": _olcekle(yonetim_ucreti(b_f)[0], basamak=2),
             "Hisse sayısı": y_f["hisse_sayisi"],
             "Etkin hisse": round(y_f["etkin_hisse"], 1),
             "En büyük %": round(y_f["en_buyuk"], 1),
@@ -407,6 +418,18 @@ with karsilastirma_sekme:
     tablo = pd.DataFrame(satirlar)
     st.dataframe(tablo, use_container_width=True,
                  height=(len(tablo) + 1) * 35 + 3)
+
+    # --- Yıllara göre getiri ---
+    st.subheader("Yıllara göre getiri")
+    st.caption("Takvim yılı getirisi (%). Kayan pencerenin gizlediği tek tek "
+               "yılları gösterir. Fonun o yıl tam verisi yoksa hücre boş "
+               "kalır — sonradan açılan fonun kuruluş yılı tam yıl değildir.")
+    yil = yillik_getiriler(fon_fiyat[list(hepsi) + [GOSTERGE]])
+    yil = yil.rename(columns={GOSTERGE: "S&P 500"})
+    yil.index = [f"{y} (kısmi)" if y == yil.index.max() else str(y)
+                 for y in yil.index]
+    st.dataframe(yil.round(1), use_container_width=True,
+                 height=(len(yil) + 1) * 35 + 3)
 
     # --- Normalize performans ---
     st.subheader("Göreli performans")
@@ -442,6 +465,148 @@ with karsilastirma_sekme:
     st.caption(f"{len(ortak)} hisse {len(hepsi)} fonun hepsinde var. "
                "Ağırlık farkı fonların nasıl ayrıştığını gösterir.")
     st.dataframe(ortak.round(2), use_container_width=True)
+
+
+# =====================================================================
+# Portföy karışımı — birden çok fonu tek portföy gibi incele
+# =====================================================================
+with karisim_sekme:
+    st.title("Portföy karışımı")
+    st.caption("Birden çok fonu birleştirip tek portföy gibi incele. "
+               "Aynı hisse iki fonda da varsa ağırlıkları toplanır — "
+               "örtüşmenin portföydeki somut karşılığı budur.")
+
+    tum_fonlar = her_fon()
+    secilen = st.multiselect("Fonlar", list(tum_fonlar),
+                             default=list(FONLAR[tema]))
+
+    if len(secilen) < 2:
+        st.info("Karışım için en az iki fon seçin.")
+    else:
+        st.caption("Ağırlıklar (toplamı 100 olmak zorunda değil, "
+                   "kendi içinde oranlanır)")
+        girisler = {}
+        for kol, f in zip(st.columns(len(secilen)), secilen):
+            girisler[f] = kol.number_input(
+                f, min_value=0.0, max_value=100.0,
+                value=round(100 / len(secilen), 1), step=5.0,
+                key=f"karisim_{f}")
+
+        toplam_giris = sum(girisler.values())
+        if toplam_giris <= 0:
+            st.warning("En az bir fona sıfırdan büyük ağırlık verin.")
+        else:
+            agirlik = {f: p for f, p in girisler.items() if p > 0}
+            oran = {f: p / toplam_giris * 100 for f, p in agirlik.items()}
+            st.caption("İşlenen ağırlıklar: "
+                       + " · ".join(f"{f} %{p:.1f}" for f, p in oran.items()))
+
+            karisim = karisim_holdings(tum_fonlar, agirlik)
+            k_fiyat = fiyat_yukle(tuple(agirlik) + (GOSTERGE, RISKSIZ))
+            k_seri = karisim_serisi(k_fiyat, agirlik)
+
+            # --- Portföy yapısı ---
+            ky = yogunlasma(karisim)
+            ayri = sum(len(tum_fonlar[f]) for f in agirlik)
+
+            st.caption("Portföy yapısı")
+            p1, p2, p3, p4, p5 = st.columns(5)
+            p1.metric("Benzersiz hisse", ky["hisse_sayisi"],
+                      help=f"Fonların pozisyonları toplamı {ayri}; "
+                           f"{ayri - ky['hisse_sayisi']} tanesi çakışıyor.")
+            p2.metric("Etkin hisse", f"{ky['etkin_hisse']:.1f}")
+            p3.metric("En büyük pozisyon", f"%{ky['en_buyuk']:.1f}")
+            p4.metric("İlk 10 ağırlığı", f"%{ky['top_10']:.1f}")
+            p5.metric("HHI", f"{ky['hhi']:.0f}")
+
+            st.divider()
+
+            # --- Risk ve getiri: karışım, fonlar ve gösterge yan yana ---
+            st.subheader(f"Risk ve getiri — {donem_adi}")
+            st.caption("Karışım günlük yeniden dengelenmiş varsayılır: her "
+                       "gün ağırlıklar hedefe döner. Al-tut bir portföyde "
+                       "kazanan fonun payı kendiliğinden büyür, sonuç farklı "
+                       "çıkar.")
+
+            k_risksiz = risksiz_gunluk_oran(k_fiyat[RISKSIZ].iloc[-gun:])
+            k_satir = {}
+            for ad, seri in ([("Karışım", k_seri)]
+                             + [(f, k_fiyat[f]) for f in agirlik]
+                             + [("S&P 500", k_fiyat[GOSTERGE])]):
+                rr = risk_metrikleri(seri.dropna().iloc[-gun:], k_risksiz)
+                k_satir[ad] = {
+                    "Getiri %": round(rr["getiri"], 1),
+                    "Volatilite %": round(rr["volatilite"], 1),
+                    "Sharpe": round(rr["sharpe"], 2),
+                    "Maks. düşüş %": round(rr["max_dusus"], 1),
+                }
+            k_tablo = pd.DataFrame(k_satir)
+            st.dataframe(k_tablo, use_container_width=True,
+                         height=(len(k_tablo) + 1) * 35 + 3)
+
+            if len(k_seri) and k_seri.index[0].year > k_fiyat.index[0].year:
+                st.caption(f"Karışım serisi {k_seri.index[0].date()} "
+                           "tarihinde başlıyor: en yeni fonun kuruluşundan "
+                           "önce karışım hesaplanamaz.")
+
+            # --- Göreli performans ---
+            st.subheader("Göreli performans")
+            k_pencere = k_seri.iloc[-gun:]
+            figk = go.Figure()
+            figk.add_trace(go.Scatter(
+                x=k_pencere.index, y=(k_pencere / k_pencere.iloc[0] - 1) * 100,
+                name="Karışım", line=dict(color="#1f77b4", width=3)))
+            for t in list(agirlik) + [GOSTERGE]:
+                s = k_fiyat[t].dropna().iloc[-gun:]
+                figk.add_trace(go.Scatter(
+                    x=s.index, y=(s / s.iloc[0] - 1) * 100,
+                    name="S&P 500" if t == GOSTERGE else t,
+                    line=dict(width=1,
+                              dash="dot" if t == GOSTERGE else "solid")))
+            figk.update_layout(height=400, margin=dict(t=10),
+                               yaxis_title=f"{donem_adi} başından (%)",
+                               hovermode="x unified")
+            st.plotly_chart(figk, use_container_width=True)
+
+            st.divider()
+
+            # --- Örtüşme ve sektör ---
+            sol, sag = st.columns(2)
+            with sol:
+                st.subheader("Seçilen fonların örtüşmesi")
+                k_ort = ortusme({f: tum_fonlar[f] for f in agirlik})
+                figo = px.imshow(k_ort, text_auto=".1f", zmin=0, zmax=100,
+                                 color_continuous_scale=["#ffffff", "#c0392b"],
+                                 labels=dict(color="Örtüşme %"))
+                figo.update_layout(height=360, margin=dict(t=10),
+                                   coloraxis_showscale=False)
+                st.plotly_chart(figo, use_container_width=True)
+
+            with sag:
+                st.subheader("Sektör dağılımı")
+                harita = sektor_yukle()
+                if not harita:
+                    st.info("Sektör haritası yok — "
+                            "`python3 sektorler.py` ile üretilebilir.")
+                else:
+                    sek = fon_sektor_agirliklari({"Karışım": karisim}, harita)
+                    sek = sek.sort_values("Karışım", ascending=True)
+                    figs = px.bar(sek, x="Karışım", y=sek.index,
+                                  orientation="h",
+                                  labels={"Karışım": "Ağırlık (%)", "y": ""})
+                    figs.update_traces(marker_color="#1f77b4")
+                    figs.update_layout(height=360, margin=dict(t=10),
+                                       yaxis_title="")
+                    st.plotly_chart(figs, use_container_width=True)
+
+            # --- En büyük pozisyonlar ---
+            st.subheader("En büyük 15 pozisyon")
+            en_buyuk = karisim.head(15).copy()
+            en_buyuk["weight"] = en_buyuk["weight"].round(2)
+            st.dataframe(
+                en_buyuk.rename(columns={"ticker": "Hisse", "name": "Şirket",
+                                         "weight": "Ağırlık %"}),
+                use_container_width=True, hide_index=True)
 
 
 # =====================================================================
