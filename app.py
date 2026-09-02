@@ -197,7 +197,16 @@ with detay_sekme:
     m1.metric("Getiri", f"%{r['getiri']:.1f}")
     m2.metric("Volatilite (yıllık)", f"%{r['volatilite']:.1f}")
     m3.metric("Sharpe", f"{r['sharpe']:.2f}")
-    m4.metric("Maks. düşüş", f"%{r['max_dusus']:.1f}")
+    m4.metric("Maks. düşüş (dönem içi)", f"%{r['max_dusus']:.1f}")
+
+    # genç fon: seçilen dönem fonun geçmişinden uzunsa dürüstçe belirt
+    mevcut_gun = int(fiyat[fon].notna().sum())
+    if mevcut_gun < gun * 0.95:
+        st.caption(f"⚠️ {fon} yalnızca ~{mevcut_gun/252:.1f} yıllık; "
+                   f"'{donem_adi}' yerine mevcut tüm geçmiş gösteriliyor.")
+    elif gun <= 21:
+        st.caption("ℹ️ Kısa dönemde Sharpe ve volatilite istatistiksel "
+                   "olarak gürültülüdür.")
 
     st.divider()
 
@@ -347,6 +356,12 @@ with karsilastirma_sekme:
             "Maks. düşüş %": round(r_f["max_dusus"], 1),
         }
     st.dataframe(pd.DataFrame(satirlar), use_container_width=True)
+
+    # genç fonlar: seçilen dönem kadar geçmişi olmayanları belirt
+    genc = [f for f in hepsi if int(fon_fiyat[f].notna().sum()) < gun * 0.95]
+    if genc:
+        st.caption(f"⚠️ {', '.join(genc)} için {donem_adi} kadar geçmiş yok; "
+                   "bu fonların getiri/risk değerleri daha kısa süreye aittir.")
 
     # --- Normalize performans ---
     st.subheader("Göreli performans")

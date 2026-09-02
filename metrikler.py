@@ -52,8 +52,14 @@ def katki(df, getiri_serisi):
 
 
 def risk_metrikleri(seri, risksiz_gunluk=0.0):
-    """Tek bir fiyat serisi için getiri, volatilite, maks. düşüş, Sharpe."""
+    """Tek bir fiyat serisi için getiri, volatilite, maks. düşüş, Sharpe.
+
+    Seri boş/tek noktaysa çökme yerine NaN döner.
+    """
     seri = seri.dropna()
+    if len(seri) < 2:
+        return {"getiri": np.nan, "volatilite": np.nan,
+                "max_dusus": np.nan, "sharpe": np.nan}
     gunluk = seri.pct_change().dropna()
     fazla = gunluk - risksiz_gunluk
 
