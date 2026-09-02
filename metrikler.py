@@ -251,3 +251,43 @@ def fon_sektor_agirliklari(holdings, harita):
         s["sektor"] = s["ticker"].map(harita).fillna("Diğer")
         kayit[fon] = s.groupby("sektor")["weight"].sum()
     return pd.DataFrame(kayit).fillna(0.0)
+
+
+def portfoy_serisi(fiyat_df, fon, agirliklar, para="TL", faiz_yillik=0.45,
+                   gun=252, baslangic=100):
+    """Karma portföyün geçmiş büyüme serisi (geriye dönük simülasyon).
+
+    agirliklar: {varlık: ağırlık} — varlıklar {fon, "Altın","Gümüş","Dolar",
+    "Euro","Faiz"} arasından. Ağırlıklar otomatik %100'e normalize edilir.
+    (portfoy_serisi, bilesenler_df) döner; ikisi de baslangic'ten başlar.
+
+    NOT: geçmiş performans; yatırım tavsiyesi değildir.
+    """
+    df = fiyat_df.loc[fiyat_df[fon].notna()].ffill().iloc[-gun:]
+    if len(df) < 2:
+        return pd.Series(dtype=float), pd.DataFrame()
+
+    if para == "TL":
+        usdtry = df["TRY=X"]
+        seri = {fon: df[fon] * usdtry, "Altın": df["GC=F"] * usdtry,
+                "Gümüş": df["SI=F"] * usdtry, "Dolar": usdtry,
+                "Euro": df["EURTRY=X"]}
+    else:
+        seri = {fon: df[fon], "Altın": df["GC=F"], "Gümüş": df["SI=F"],
+                "Euro": df["EURUSD=X"]}
+
+    # her varlığı başlangıçta 1'e normalize et (büyüme çarpanı)
+    buyume = pd.DataFrame({k: s / s.iloc[0] for k, s in seri.items()})
+    # faiz: sentetik günlük bileşik büyüme
+    gunluk = (1 + faiz_yillik) ** (1 / 252)
+    buyume["Faiz"] = [gunluk ** i for i in range(len(buyume))]
+
+    # sadece hem seçilen hem mevcut varlıklar, ağırlığı >0 olanlar
+    w = pd.Series({k: v for k, v in agirliklar.items()
+                   if k in buyume.columns and v > 0}, dtype=float)
+    if w.empty:
+        return pd.Series(dtype=float), pd.DataFrame()
+    w = w / w.sum()
+
+    portfoy = (buyume[w.index] * w).sum(axis=1) * baslangic
+    return portfoy, buyume[w.index] * baslangic

@@ -13,7 +13,7 @@ from metrikler import (donem_getirisi, yogunlasma, katki,
                        risk_metrikleri, risksiz_gunluk_oran,
                        ortusme, ortak_hisseler, katki_donem_basi,
                        hisse_siralamasi, alternatif_getiriler,
-                       fon_sektor_agirliklari)
+                       fon_sektor_agirliklari, portfoy_serisi)
 import sektorler
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
@@ -118,6 +118,23 @@ def sektor_yukle():
     return sektorler.yukle()
 
 
+def snapshot_notu(holdings):
+    """Fonların 'as of' tarihlerini gösterir; farklıysa uyarır.
+
+    holdings: {fon: holdings DataFrame}
+    """
+    tarihler = {f: d["date"].iloc[0].date() for f, d in holdings.items()}
+    benzersiz = sorted(set(tarihler.values()))
+    ozet = ", ".join(f"{f} {t:%d.%m}" for f, t in tarihler.items())
+    if len(benzersiz) == 1:
+        st.caption(f"Holdings tarihi: {benzersiz[0]:%d.%m.%Y} (tüm fonlar).")
+    else:
+        st.warning(
+            f"⚠️ Fonların holdings tarihleri farklı: {ozet}. "
+            "Ağırlıklar aynı güne ait değil. Güncellemek için "
+            "`python3 guncelle.py` (otomatik fonlar) ve elle indirilenler.")
+
+
 # --- Kenar çubuğu ---
 st.sidebar.title("ETF Analiz")
 tema = st.sidebar.radio("Tema", [t for t in FONLAR if FONLAR[t]])
@@ -135,8 +152,10 @@ faiz_yillik = st.sidebar.number_input(
     help="Alternatif karşılaştırmada 'faiz' için varsayım. "
          "Piyasa verisi değil, güncel mevduat oranına göre değiştirin.")
 
-detay_sekme, karsilastirma_sekme, hisse_sekme, dxyz_sekme = st.tabs(
-    ["Fon detayı", "Karşılaştırma", "Hisse bazlı", "DXYZ — özel şirketler"])
+(detay_sekme, karsilastirma_sekme, hisse_sekme, portfoy_sekme,
+ dxyz_sekme) = st.tabs(
+    ["Fon detayı", "Karşılaştırma", "Hisse bazlı", "Portföy simülatörü",
+     "DXYZ — özel şirketler"])
 
 
 # =====================================================================
@@ -307,6 +326,7 @@ with karsilastirma_sekme:
     risksiz = risksiz_gunluk_oran(fon_fiyat[RISKSIZ].iloc[-gun:])
 
     st.title(f"{tema} — {donem_adi}")
+    snapshot_notu(hepsi)
 
     # --- Yan yana tablo ---
     st.subheader("Fonlar yan yana")
@@ -375,6 +395,7 @@ with hisse_sekme:
 
     st.caption(f"{len(matris)} hisse, {len(hepsi_fon)} fon "
                f"({', '.join(hepsi_fon)}). Tema fark etmeksizin hepsi.")
+    snapshot_notu(hepsi_fon)
 
     # --- tek hisse: hangi fon en çok tutuyor ---
     varsayilan = "NVDA" if "NVDA" in matris.index else matris.index[0]
@@ -519,3 +540,92 @@ with dxyz_sekme:
             st.plotly_chart(figp, use_container_width=True)
         else:
             st.info("DXYZ fiyat verisi alınamadı.")
+
+
+# =====================================================================
+# Portföy simülatörü — geçmiş "ne olurdu" simülasyonu
+# =====================================================================
+with portfoy_sekme:
+    st.title("Portföy simülatörü")
+    st.caption("Farklı varlıkları karıştırıp geçmişte ne getireceğini gör. "
+               "Slider'larla dağılımı ayarla.")
+    st.info("📌 Bu bir **geçmiş simülasyondur, yatırım tavsiyesi değildir.** "
+            "Geçmiş getiri geleceği garanti etmez.", icon="⚠️")
+
+    ust1, ust2, ust3 = st.columns(3)
+    p_para = ust1.radio("Para birimi", ["TL bazlı", "USD bazlı"],
+                        horizontal=True, key="p_para")
+    p_kodu = "TL" if p_para.startswith("TL") else "USD"
+    p_fon = ust2.selectbox("Fon", [f for t in FONLAR for f in FONLAR[t]],
+                           key="p_fon")
+    p_donem = ust3.selectbox("Dönem", list(DONEMLER.keys()), index=3,
+                             key="p_donem")
+    p_gun = DONEMLER[p_donem]
+    p_tutar = st.number_input(
+        f"Başlangıç tutarı ({'TL' if p_kodu=='TL' else 'USD'})",
+        min_value=100, value=10000, step=1000, key="p_tutar")
+
+    # varlık slider'ları
+    st.caption("Dağılım (%) — otomatik %100'e ölçeklenir:")
+    varliklar = [p_fon, "Altın", "Gümüş"]
+    if p_kodu == "TL":
+        varliklar.append("Dolar")
+    varliklar += ["Euro", "Faiz"]
+
+    kolonlar = st.columns(len(varliklar))
+    agirliklar = {}
+    varsayilan = {p_fon: 40, "Altın": 20, "Gümüş": 0, "Dolar": 15,
+                  "Euro": 0, "Faiz": 25}
+    for k, v in zip(kolonlar, varliklar):
+        agirliklar[v] = k.slider(v, 0, 100, varsayilan.get(v, 0), 5,
+                                 key=f"p_slider_{v}")
+
+    toplam = sum(agirliklar.values())
+    if toplam == 0:
+        st.warning("En az bir varlığa ağırlık ver.")
+    else:
+        st.caption(f"Toplam: %{toplam} → %100'e ölçeklendi: " +
+                   ", ".join(f"{k} %{v/toplam*100:.0f}"
+                             for k, v in agirliklar.items() if v > 0))
+
+        alt = alt_fiyat_yukle()
+        fpx = fiyat_yukle((p_fon, GOSTERGE, RISKSIZ))
+        cerceve = alt.join(fpx[[p_fon]], how="outer")
+
+        portfoy, bilesenler = portfoy_serisi(
+            cerceve, p_fon, agirliklar, para=p_kodu,
+            faiz_yillik=faiz_yillik / 100, gun=p_gun, baslangic=p_tutar)
+
+        if portfoy.empty:
+            st.info("Bu dönem/para birimi için veri yetersiz.")
+        else:
+            son = portfoy.iloc[-1]
+            getiri = (son / p_tutar - 1) * 100
+            gercek_yil = len(portfoy) / 252
+            m1, m2, m3 = st.columns(3)
+            m1.metric(f"{p_tutar:,.0f} → bugün", f"{son:,.0f}")
+            m2.metric("Getiri", f"%{getiri:.1f}")
+            m3.metric("Süre", f"{gercek_yil:.1f} yıl")
+            if gercek_yil < p_gun / 252 * 0.95:
+                st.caption(f"⚠️ {p_fon} bu kadar eski değil; "
+                           f"simülasyon {gercek_yil:.1f} yılla sınırlı.")
+
+            # portföy + bileşenler büyüme çizgisi
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=portfoy.index, y=portfoy, name="PORTFÖY",
+                line=dict(color="#1f77b4", width=3.5)))
+            renk = {p_fon: "#e67e22", "Altın": "#f1c40f", "Gümüş": "#95a5a6",
+                    "Dolar": "#27ae60", "Euro": "#8e44ad", "Faiz": "#c0392b"}
+            for k in bilesenler.columns:
+                fig.add_trace(go.Scatter(
+                    x=bilesenler.index, y=bilesenler[k], name=k,
+                    line=dict(color=renk.get(k), width=1, dash="dot"),
+                    opacity=0.6))
+            fig.update_layout(height=430, hovermode="x unified",
+                              yaxis_title=f"Değer ({'TL' if p_kodu=='TL' else 'USD'})",
+                              margin=dict(t=10),
+                              legend=dict(orientation="h", y=1.1))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Kalın çizgi: karma portföy. Noktalı çizgiler: her "
+                       "varlık tek başına aynı tutarla ne yapardı.")
