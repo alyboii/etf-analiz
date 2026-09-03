@@ -228,7 +228,6 @@ def alternatif_getiriler(fiyat_df, fon, para="TL", faiz_yillik=0.45,
             "Altın":  df["GC=F"],
             "Gümüş":  df["SI=F"],
             "Euro":   df["EURUSD=X"],
-            "Faiz":   df["BIL"],
         }
         faiz_var = False
 

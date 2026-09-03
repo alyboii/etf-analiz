@@ -11,6 +11,7 @@
 
 import html
 import json
+import os
 import re
 import time
 import urllib.error
@@ -21,7 +22,10 @@ import pandas as pd
 
 from parsers import parse_ishares
 
-UA = "ETF Analiz Research (github.com/alyboii/etf-analiz)"
+# SEC bir iletişim e-postası zorunlu tutuyor (aksi halde 403). Kişisel e-postayı
+# public repoya koymamak için generic default; kendi adresinizi vermek isterseniz
+# SEC_UA ortam değişkenini ayarlayın (Streamlit Cloud → Settings → Secrets).
+UA = os.environ.get("SEC_UA", "ETF Analiz research@etf-analiz.app")
 TARAYICI_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")
 
