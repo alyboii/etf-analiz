@@ -320,6 +320,9 @@ with detay_sekme:
         fiyat = fiyat_yukle(tuple(h["ticker"]) + eski
                             + (fon, GOSTERGE, NASDAQ, RISKSIZ))
         getiri = donem_getirisi(fiyat, gun)
+        # gerçekten fiyatı olan tickerlar (kolon var ama hep NaN olabilir —
+        # özel/SPV pozisyonları böyle: borsada fiyatı yok)
+        fiyatli = {c for c in fiyat.columns if fiyat[c].notna().any()}
 
         st.title(f"{fon} — {donem_adi}")
         # --- Kimlik kartı ---
@@ -386,25 +389,49 @@ with detay_sekme:
             f"Yatırdığın her 100 birimin: {satir} … olarak dağılır. "
             f"En büyük **3 hisse** paranın **%{ilk3:.0f}**'ını oluşturur; "
             f"fon toplam **{y['hisse_sayisi']} hisse** tutuyor.")
+        ozel_h = h[~h["ticker"].isin(fiyatli)]
+        if len(ozel_h):
+            enb_o = ozel_h.nlargest(1, "weight").iloc[0]
+            st.markdown(
+                f"🔒 Ayrıca fonun **%{ozel_h['weight'].sum():.0f}**'ı **borsada "
+                f"olmayan özel şirketlerde** (ör. {enb_o['name']}, %{enb_o['weight']:.1f}). "
+                "Bunların günlük fiyatı olmadığı için getiri hesaplarında yer almaz.")
 
         # --- Treemap ---
         st.subheader("Portföy dağılımı")
         d = h.copy()
         d["getiri"] = d["ticker"].map(getiri)
+        # borsada fiyatı çekilemeyen = özel şirket (SPV/halka açılmamış)
+        d["ozel"] = ~d["ticker"].isin(fiyatli)
+        d["etiket"] = [f"🔒 {t}" if o else t
+                       for t, o in zip(d["ticker"], d["ozel"])]
+        d["durum"] = ["Özel şirket — borsada fiyatı yok" if o
+                      else (f"{g:.1f}%" if pd.notna(g) else "veri yetersiz")
+                      for o, g in zip(d["ozel"], d["getiri"])]
 
         fig = px.treemap(
-            d, path=[px.Constant(fon), "ticker"], values="weight",
+            d, path=[px.Constant(fon), "etiket"], values="weight",
             color="getiri", color_continuous_midpoint=0,
             color_continuous_scale=["#c0392b", "#eeeeee", "#27ae60"],
-            custom_data=["name", "weight", "getiri"],
+            custom_data=["name", "weight", "durum"],
         )
         fig.update_traces(
             texttemplate="<b>%{label}</b><br>%{customdata[1]:.1f}%",
             hovertemplate="<b>%{customdata[0]}</b><br>Ağırlık: %{customdata[1]:.2f}%"
-                          f"<br>{donem_adi}: " + "%{customdata[2]:.1f}%<extra></extra>",
+                          f"<br>{donem_adi}: " + "%{customdata[2]}<extra></extra>",
         )
         fig.update_layout(height=500, margin=dict(t=10, l=0, r=0, b=0))
         st.plotly_chart(fig, use_container_width=True)
+
+        ozel_d = d[d["ozel"]]
+        if len(ozel_d):
+            liste = ", ".join(f"{r['name']} (%{r['weight']:.1f})"
+                              for _, r in ozel_d.nlargest(3, "weight").iterrows())
+            st.caption(
+                "🔒 = **özel şirket pozisyonu**: borsada işlem görmeyen (henüz "
+                "halka açılmamış) şirketlere fonun dolaylı erişimi — genelde bir "
+                "SPV/fon aracılığıyla. Günlük borsa fiyatı olmadığı için getirisi "
+                f"hesaplanamaz, treemap'te **renksiz** görünür. Bu fondaki: {liste}.")
 
         # --- Katkı ---
         st.subheader("Getiriye katkı")
