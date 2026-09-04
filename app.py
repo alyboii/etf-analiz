@@ -535,9 +535,22 @@ with detay_sekme:
         alt_fiyat = alt_fiyat_yukle()
         # fon fiyatını alt varlıklarla aynı çerçevede birleştir
         alt_cerceve = alt_fiyat.join(fiyat[[fon]], how="outer")
+
+        # Genç fon: kapsamadığı dönemleri gösterme (yoksa sadece sentetik 'Faiz'
+        # barı kalır, kafa karıştırır). Alt varlıklar da fonun günlerine
+        # hizalandığı için fon kadar geçmiş gerekir.
+        mevcut_g = int(alt_cerceve[fon].notna().sum())
+        donem_alt = {ad: g for ad, g in DONEMLER_ALT.items()
+                     if g <= mevcut_g / 0.9}
+        atlanan = [ad for ad in DONEMLER_ALT if ad not in donem_alt]
+
         alt_df = alternatif_getiriler(
             alt_cerceve, fon, para=para_kodu,
-            faiz_yillik=faiz_yillik / 100, donemler=DONEMLER_ALT)
+            faiz_yillik=faiz_yillik / 100, donemler=donem_alt)
+
+        if atlanan:
+            st.caption(f"⚠️ {fon} yalnızca ~{mevcut_g/252:.1f} yıllık; "
+                       f"{', '.join(atlanan)} dönem(ler)i gösterilemiyor.")
 
         if para_kodu == "TL":
             st.caption(f"Lira bazlı: USD varlıklar USD/TRY ile çevrildi. "
@@ -555,7 +568,8 @@ with detay_sekme:
                 usd_f = (df_a[fon].iloc[-1] / df_a[fon].iloc[-n] - 1) * 100
                 kur = (df_a["TRY=X"].iloc[-1] / df_a["TRY=X"].iloc[-n] - 1) * 100
                 tl_f = ((1 + usd_f / 100) * (1 + kur / 100) - 1) * 100
-                st.caption(f"**{fon} son ~1 yıl — TL getirisi nereden geliyor?**")
+                sure = f"~{n/252:.1f} yıl" if n >= 210 else f"~{round(n/21)} ay"
+                st.caption(f"**{fon} son {sure} — TL getirisi nereden geliyor?**")
                 a1, a2, a3 = st.columns(3)
                 a1.metric("Hisse getirisi (USD)", f"%{usd_f:.1f}",
                           help="Fonun dolar cinsinden değer artışı.")
@@ -575,20 +589,25 @@ with detay_sekme:
                 "**daha çok** çıkar (lira değer kaybettiği sürece). Toplamdan biraz "
                 "fazla olması, kur kazancının hissenin kârının üstüne de binmesindendir.")
 
-        # dönem sırası korunur, fonun kendi barı koyu renkte vurgulanır
-        alt_df["donem"] = pd.Categorical(alt_df["donem"],
-                                         list(DONEMLER_ALT), ordered=True)
-        renk_haritasi = dict(ALT_RENK)
-        renk_haritasi[fon] = "#1f77b4"
-        sira_varlik = [fon] + [v for v in ALT_RENK if v in alt_df["varlik"].values]
-        figa = px.bar(alt_df.sort_values("donem"), x="donem", y="getiri",
-                      color="varlik", barmode="group",
-                      category_orders={"varlik": sira_varlik},
-                      color_discrete_map=renk_haritasi,
-                      labels={"donem": "", "getiri": "Getiri (%)", "varlik": ""})
-        figa.update_layout(height=430, margin=dict(t=10),
-                           legend=dict(orientation="h", y=1.12))
-        st.plotly_chart(figa, use_container_width=True)
+        if alt_df.empty:
+            st.info(f"{fon} bu karşılaştırma için çok yeni (yeterli geçmiş yok).")
+        else:
+            # dönem sırası korunur, fonun kendi barı koyu renkte vurgulanır
+            alt_df["donem"] = pd.Categorical(alt_df["donem"],
+                                             list(donem_alt), ordered=True)
+            renk_haritasi = dict(ALT_RENK)
+            renk_haritasi[fon] = "#1f77b4"
+            sira_varlik = [fon] + [v for v in ALT_RENK
+                                   if v in alt_df["varlik"].values]
+            figa = px.bar(alt_df.sort_values("donem"), x="donem", y="getiri",
+                          color="varlik", barmode="group",
+                          category_orders={"varlik": sira_varlik},
+                          color_discrete_map=renk_haritasi,
+                          labels={"donem": "", "getiri": "Getiri (%)",
+                                  "varlik": ""})
+            figa.update_layout(height=430, margin=dict(t=10),
+                               legend=dict(orientation="h", y=1.12))
+            st.plotly_chart(figa, use_container_width=True)
 
 
 # =====================================================================
