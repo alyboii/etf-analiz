@@ -296,3 +296,29 @@ def portfoy_serisi(fiyat_df, fon, agirliklar, para="TL", faiz_yillik=0.45,
 
     portfoy = (buyume[w.index] * w).sum(axis=1) * baslangic
     return portfoy, buyume[w.index] * baslangic
+
+
+def korelasyon(fiyat_df, fon, digerleri, gun):
+    """Fon + karşılaştırma varlıklarının günlük getiri korelasyon matrisi.
+
+    Fonun işlem günlerine hizalanır (BTC hafta sonu da işlem görür).
+    fiyat_df: fon ve digerleri kolonlarını içermeli.
+    """
+    kolon = [fon] + [d for d in digerleri if d in fiyat_df.columns]
+    d = fiyat_df[kolon].loc[fiyat_df[fon].notna()].ffill().iloc[-gun:]
+    r = d.pct_change().dropna()
+    if len(r) < 3:
+        return pd.DataFrame()
+    return r.corr()
+
+
+def yillik_getiriler(seri):
+    """Takvim yılı içi yüzde getiri (yıl -> %). Kısmi yıllar (ilk/son) dahil.
+
+    Yıl getirisi = o yılın son / ilk işlem günü. Cari yıl YTD olur.
+    """
+    seri = seri.dropna()
+    if len(seri) < 2:
+        return pd.Series(dtype=float)
+    g = seri.groupby(seri.index.year)
+    return (g.last() / g.first() - 1) * 100

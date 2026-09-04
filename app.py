@@ -13,7 +13,8 @@ from metrikler import (donem_getirisi, yogunlasma, katki,
                        risk_metrikleri, risksiz_gunluk_oran,
                        ortusme, ortak_hisseler, katki_donem_basi,
                        hisse_siralamasi, alternatif_getiriler,
-                       fon_sektor_agirliklari, portfoy_serisi)
+                       fon_sektor_agirliklari, portfoy_serisi,
+                       korelasyon, yillik_getiriler)
 import sektorler
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
@@ -44,6 +45,33 @@ FONLAR = {
     },
 }
 
+# Fon kimlik bilgisi: tam ad, sağlayıcı, gider oranı (%), ne izlediği.
+# Gider oranları sağlayıcı sitelerinden doğrulandı (Eylül 2026).
+FON_BILGI = {
+    "SMH":  ("VanEck Yarı İletken ETF", "VanEck", 0.35,
+             "ABD yarı iletken üreticileri (piyasa değeri ağırlıklı, NVIDIA yoğun)"),
+    "SOXX": ("iShares Yarı İletken ETF", "iShares", 0.33,
+             "PHLX yarı iletken endeksi (30 hisse)"),
+    "XSD":  ("SPDR S&P Yarı İletken ETF", "State Street", 0.35,
+             "ABD yarı iletken — eşit ağırlıklı (daha dağıtık)"),
+    "SMHX": ("VanEck Fabless Yarı İletken ETF", "VanEck", 0.35,
+             "Üretimi dışarıya veren (fabless) tasarım şirketleri"),
+    "SOXQ": ("Invesco PHLX Yarı İletken ETF", "Invesco", 0.19,
+             "PHLX yarı iletken — en düşük maliyetli"),
+    "PSI":  ("Invesco Yarı İletken ETF", "Invesco", 0.56,
+             "ABD yarı iletken (momentum/kalite seçimli)"),
+    "ROKT": ("SPDR Kensho Final Frontiers ETF", "State Street", 0.45,
+             "Uzay + derin deniz keşfi teknolojileri"),
+    "NASA": ("Tema Space Innovators ETF", "Tema", 0.75,
+             "Küresel uzay ekonomisi (yabancı borsalar dahil)"),
+    "IGV":  ("iShares Genişletilmiş Yazılım ETF", "iShares", 0.38,
+             "ABD yazılım şirketleri (Palantir, Microsoft, Salesforce)"),
+    "AIQ":  ("Global X Yapay Zeka & Teknoloji ETF", "Global X", 0.68,
+             "Yapay zeka ve büyük teknoloji, küresel"),
+    "CHAT": ("Roundhill Üretken Yapay Zeka ETF", "Roundhill", 0.75,
+             "Üretken yapay zeka odaklı (küresel)"),
+}
+
 DONEMLER = {"1 ay": 21, "3 ay": 63, "6 ay": 126, "1 yıl": 252,
             "3 yıl": 756, "5 yıl": 1260}
 
@@ -57,6 +85,8 @@ ALT_RENK = {"Altın": "#f1c40f", "Gümüş": "#95a5a6", "Dolar": "#27ae60",
 RISKSIZ = "BIL"      # kısa vadeli hazine ETF'i, Sharpe'ın risksiz oranı
 GOSTERGE = "^GSPC"   # S&P 500
 NASDAQ = "^IXIC"     # Nasdaq Composite
+BITCOIN = "BTC-USD"  # korelasyon karşılaştırması için
+KORELASYON_VARLIK = [BITCOIN, NASDAQ, GOSTERGE]  # fon ile karşılaştırılanlar
 
 # Alternatif yatırım karşılaştırması için (TL/USD bazlı)
 ALT_TICKER = ("GC=F", "SI=F", "TRY=X", "EURTRY=X", "EURUSD=X", "BIL")
@@ -92,9 +122,34 @@ def dxyz_yukle():
 
 @st.cache_data
 def fiyat_yukle(tickerlar):
-    df = yf.download(list(tickerlar), start="2019-01-01",
-                     auto_adjust=True, progress=False)["Close"]
-    return df.dropna(how="all")
+    """Fiyat serileri; günlük disk önbelleğiyle (data/cache/fiyat_<gün>.parquet).
+
+    İlk açılışta yavaş yfinance indirmesini azaltır: aynı gün tekrar açılışta
+    (konteyner yeniden başlasa bile) önbellekten okur, sadece eksik tickerları
+    indirir.
+    """
+    tickerlar = tuple(dict.fromkeys(tickerlar))  # tekrarları at, sırayı koru
+    yol = Path("data/cache") / f"fiyat_{pd.Timestamp.today():%Y%m%d}.parquet"
+    try:
+        onbellek = pd.read_parquet(yol) if yol.exists() else pd.DataFrame()
+    except Exception:
+        onbellek = pd.DataFrame()
+
+    eksik = [t for t in tickerlar if t not in onbellek.columns]
+    if eksik:
+        yeni = yf.download(eksik, start="2019-01-01",
+                           auto_adjust=True, progress=False)["Close"]
+        if isinstance(yeni, pd.Series):
+            yeni = yeni.to_frame(eksik[0])
+        onbellek = yeni if onbellek.empty else onbellek.join(yeni, how="outer")
+        try:
+            yol.parent.mkdir(parents=True, exist_ok=True)
+            onbellek.to_parquet(yol)
+        except Exception:
+            pass
+
+    var = [t for t in tickerlar if t in onbellek.columns]
+    return onbellek[var].dropna(how="all")
 
 
 @st.cache_data
@@ -222,6 +277,21 @@ faiz_yillik = st.sidebar.number_input(
     help="Alternatif karşılaştırmada 'faiz' için varsayım. "
          "Piyasa verisi değil, güncel mevduat oranına göre değiştirin.")
 
+with st.expander("ℹ️ Bu dashboard nasıl kullanılır?"):
+    st.markdown(
+        "Yarı iletken, uzay ve yapay zeka temalı ETF'leri (borsada işlem gören "
+        "fon sepetleri) karşılaştırır. Soldan **tema** ve **fon** seç, **dönem** "
+        "ayarla.\n\n"
+        "- **Fon detayı** — seçili fonun içi: ne tuttuğu, getirisi, riski, "
+        "endekslerle ve alternatif yatırımlarla (altın/dolar/faiz) karşılaştırması.\n"
+        "- **Karşılaştırma** — aynı temadaki fonlar yan yana.\n"
+        "- **Hisse bazlı** — bir hisseyi (ör. NVIDIA) en çok hangi fon tutuyor.\n"
+        "- **Portföy simülatörü** — kendi karışımını kurup geçmişte ne "
+        "getireceğini gör.\n\n"
+        "Fon getirileri **USD** bazlıdır; alternatif ve portföy bölümlerinde "
+        "TL/USD seçilebilir. **Bu araç bilgilendirme amaçlıdır, yatırım "
+        "tavsiyesi değildir.**")
+
 (detay_sekme, karsilastirma_sekme, hisse_sekme,
  portfoy_sekme) = st.tabs(
     ["Fon detayı", "Karşılaştırma", "Hisse bazlı", "Portföy simülatörü"])
@@ -244,32 +314,56 @@ with detay_sekme:
             eski = tuple(sorted(set(gec_tum[gec_tum["fund"] == fon]["ticker"])
                                 - set(h["ticker"])))
 
+        # NOT: BTC hafta sonu da işlem gördüğü için ANA çerçeveye eklenmez
+        # (indekse hafta sonu satırı ekleyip donem_getirisi kapsamını bozuyor).
+        # Korelasyon için ayrı çekilir.
         fiyat = fiyat_yukle(tuple(h["ticker"]) + eski
                             + (fon, GOSTERGE, NASDAQ, RISKSIZ))
         getiri = donem_getirisi(fiyat, gun)
 
         st.title(f"{fon} — {donem_adi}")
-        st.caption(f"Holdings tarihi: {h['date'].iloc[0].date()}")
-
         # --- Kimlik kartı ---
+        if fon in FON_BILGI:
+            ad, saglayici, gider, izler = FON_BILGI[fon]
+            st.markdown(f"**{ad}** · {saglayici} · Gider oranı **%{gider}**")
+            st.caption(f"Ne izliyor: {izler}  ·  Holdings tarihi: "
+                       f"{h['date'].iloc[0].date()}")
+        else:
+            st.caption(f"Holdings tarihi: {h['date'].iloc[0].date()}")
+
         y = yogunlasma(h)
         risksiz = risksiz_gunluk_oran(fiyat[RISKSIZ].iloc[-gun:])
         r = risk_metrikleri(fiyat[fon].iloc[-gun:], risksiz)
 
         st.caption("Portföy yapısı")
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Hisse sayısı", y["hisse_sayisi"])
-        k2.metric("Etkin hisse", f"{y['etkin_hisse']:.1f}")
-        k3.metric("En büyük pozisyon", f"%{y['en_buyuk']:.1f}")
-        k4.metric("İlk 10 ağırlığı", f"%{y['top_10']:.1f}")
-        k5.metric("HHI", f"{y['hhi']:.0f}")
+        k1.metric("Hisse sayısı", y["hisse_sayisi"],
+                  help="Fonun tuttuğu farklı hisse sayısı.")
+        k2.metric("Etkin hisse", f"{y['etkin_hisse']:.1f}",
+                  help="Ağırlıklar hesaba katılınca 'gerçekte' kaç hisseye "
+                       "yayıldığı. Yüksek = daha dağıtık, düşük = birkaç hisseye "
+                       "yığılmış.")
+        k3.metric("En büyük pozisyon", f"%{y['en_buyuk']:.1f}",
+                  help="En büyük tek hissenin fon içindeki ağırlığı.")
+        k4.metric("İlk 10 ağırlığı", f"%{y['top_10']:.1f}",
+                  help="En büyük 10 hissenin toplam ağırlığı. Yüksekse fon "
+                       "birkaç hisseye yoğunlaşmış.")
+        k5.metric("HHI", f"{y['hhi']:.0f}",
+                  help="Yoğunlaşma endeksi (ağırlıkların kareleri toplamı). "
+                       "Yükseldikçe fon daha az hisseye yığılmış; 10000 = tek hisse.")
 
         st.caption(f"Risk ve getiri — {donem_adi}")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Getiri", f"%{r['getiri']:.1f}")
-        m2.metric("Volatilite (yıllık)", f"%{r['volatilite']:.1f}")
-        m3.metric("Sharpe", f"{r['sharpe']:.2f}")
-        m4.metric("Maks. düşüş (dönem içi)", f"%{r['max_dusus']:.1f}")
+        m1.metric("Getiri", f"%{r['getiri']:.1f}",
+                  help="Seçili dönemdeki fiyat getirisi (USD).")
+        m2.metric("Volatilite (yıllık)", f"%{r['volatilite']:.1f}",
+                  help="Yıllıklandırılmış oynaklık; risk ölçüsü. Yüksekse fiyat "
+                       "daha çok zıplıyor.")
+        m3.metric("Sharpe", f"{r['sharpe']:.2f}",
+                  help="Risk başına getiri (fazla getiri ÷ oynaklık). "
+                       "Yüksek/pozitif iyi, negatif = riske değmemiş.")
+        m4.metric("Maks. düşüş (dönem içi)", f"%{r['max_dusus']:.1f}",
+                  help="Dönem içinde zirveden en dibe yaşanan en büyük kayıp.")
 
         # genç fon: seçilen dönem fonun geçmişinden uzunsa dürüstçe belirt
         mevcut_gun = int(fiyat[fon].notna().sum())
@@ -281,6 +375,17 @@ with detay_sekme:
                        "olarak gürültülüdür.")
 
         st.divider()
+
+        # --- "Ne alırsın" sade özet ---
+        st.subheader(f"{fon} alırsan ne alırsın?")
+        enb = h.nlargest(5, "weight")
+        ilk3 = h.nlargest(3, "weight")["weight"].sum()
+        satir = " · ".join(f"**%{w:.0f}** {t}"
+                           for t, w in zip(enb["ticker"], enb["weight"]))
+        st.markdown(
+            f"Yatırdığın her 100 birimin: {satir} … olarak dağılır. "
+            f"En büyük **3 hisse** paranın **%{ilk3:.0f}**'ını oluşturur; "
+            f"fon toplam **{y['hisse_sayisi']} hisse** tutuyor.")
 
         # --- Treemap ---
         st.subheader("Portföy dağılımı")
@@ -341,6 +446,26 @@ with detay_sekme:
                            showlegend=False, coloraxis_showscale=False)
         st.plotly_chart(fig2, use_container_width=True)
 
+        # --- Kazananlar / kaybedenler ---
+        if len(kdf) >= 2:
+            kk1, kk2 = st.columns(2)
+            kaz = kdf.head(5)
+            kayb = kdf.tail(5).iloc[::-1]
+            with kk1:
+                st.caption(f"🟢 {donem_adi} en çok TAŞIYAN 5 hisse")
+                st.dataframe(
+                    kaz[["ticker", "getiri", "katki"]]
+                    .rename(columns={"ticker": "Hisse", "getiri": "Getiri %",
+                                     "katki": "Katkı puan"}).round(1),
+                    hide_index=True, use_container_width=True)
+            with kk2:
+                st.caption(f"🔴 {donem_adi} en çok BATIRAN 5 hisse")
+                st.dataframe(
+                    kayb[["ticker", "getiri", "katki"]]
+                    .rename(columns={"ticker": "Hisse", "getiri": "Getiri %",
+                                     "katki": "Katkı puan"}).round(1),
+                    hide_index=True, use_container_width=True)
+
         # --- Endeks karşılaştırması (S&P 500 + Nasdaq) ---
         st.subheader("Endekslere karşı fiyat")
         st.caption(f"{donem_adi} başından itibaren yüzde getiri. USD bazlı.")
@@ -359,6 +484,46 @@ with detay_sekme:
         fig3.update_layout(height=400, yaxis_title=f"{donem_adi} başından (%)",
                            hovermode="x unified", margin=dict(t=10))
         st.plotly_chart(fig3, use_container_width=True)
+
+        # --- Yıllık getiriler ---
+        st.subheader("Yıllık getiriler")
+        st.caption("Takvim yılı içi getiri (USD). Son yıl bu yılın başından "
+                   "bugüne (YTD).")
+        yg = yillik_getiriler(fiyat[fon])
+        if len(yg) >= 2:
+            bugun_yil = pd.Timestamp.today().year
+            etiketler = [f"{int(yil)} (YTD)" if int(yil) == bugun_yil
+                         else str(int(yil)) for yil in yg.index]
+            figy = px.bar(x=etiketler, y=yg.values,
+                          labels={"x": "", "y": "Getiri (%)"},
+                          text=[f"%{v:.0f}" for v in yg.values])
+            figy.update_traces(
+                marker_color=["#27ae60" if v >= 0 else "#c0392b"
+                              for v in yg.values],
+                textposition="outside")
+            figy.update_layout(height=340, margin=dict(t=10))
+            st.plotly_chart(figy, use_container_width=True)
+
+        # --- Korelasyon: neyle birlikte hareket ediyor ---
+        st.subheader("Neyle birlikte hareket ediyor?")
+        st.caption("Günlük getiri korelasyonu (seçili dönem). 1'e yakın = "
+                   "birlikte hareket eder, 0 = ilgisiz, negatif = ters. "
+                   "Bitcoin, Nasdaq ve S&P 500 ile.")
+        kor_fiyat = fiyat_yukle((fon, BITCOIN, NASDAQ, GOSTERGE))
+        kor = korelasyon(kor_fiyat, fon, KORELASYON_VARLIK, gun)
+        if not kor.empty:
+            ad_map = {fon: fon, BITCOIN: "Bitcoin", NASDAQ: "Nasdaq",
+                      GOSTERGE: "S&P 500"}
+            kor = kor.rename(index=ad_map, columns=ad_map)
+            figk = px.imshow(kor, text_auto=".2f", zmin=-1, zmax=1,
+                             color_continuous_scale=["#c0392b", "#ffffff",
+                                                     "#1f77b4"],
+                             labels=dict(color="Korelasyon"))
+            figk.update_layout(height=360, margin=dict(t=10),
+                               coloraxis_showscale=False)
+            st.plotly_chart(figk, use_container_width=True)
+        else:
+            st.info("Korelasyon için yeterli veri yok.")
 
         # --- Alternatif yatırımlara karşı (TL / USD) ---
         st.divider()
@@ -382,14 +547,33 @@ with detay_sekme:
             st.caption("USD (dolar) bazlı: 'dolar' baz para olduğu için grafikte "
                        "yok, 'euro' = EUR/USD.")
 
+        # TL modunda fonun getirisini ayrıştır: hisse (USD) + kur = TL
+        if para_kodu == "TL":
+            df_a = alt_cerceve.loc[alt_cerceve[fon].notna()].ffill()
+            n = min(252, len(df_a))
+            if n >= 2:
+                usd_f = (df_a[fon].iloc[-1] / df_a[fon].iloc[-n] - 1) * 100
+                kur = (df_a["TRY=X"].iloc[-1] / df_a["TRY=X"].iloc[-n] - 1) * 100
+                tl_f = ((1 + usd_f / 100) * (1 + kur / 100) - 1) * 100
+                st.caption(f"**{fon} son ~1 yıl — TL getirisi nereden geliyor?**")
+                a1, a2, a3 = st.columns(3)
+                a1.metric("Hisse getirisi (USD)", f"%{usd_f:.1f}",
+                          help="Fonun dolar cinsinden değer artışı.")
+                a2.metric("Kur katkısı (USD/TRY)", f"%{kur:.1f}",
+                          help="Liranın dolara karşı değer kaybı; dolar varlığını "
+                               "TL cinsinden değerli kılar.")
+                a3.metric(f"{fon} TL bazlı = ", f"%{tl_f:.1f}",
+                          help="Hisse × kur birleşik. Toplamdan biraz fazla, çünkü "
+                               "kur kazancı hissenin kârının üstüne de biner.")
+
         with st.expander("💡 TL bazlı ve USD bazlı neden farklı?"):
             st.markdown(
                 "Fonlar ve altın USD cinsinden fiyatlanır. **TL bazlı** getiri, "
                 "USD getirinin üstüne **liranın dolara karşı değer kaybını** ekler:\n\n"
                 "`TL getiri ≈ (1 + USD getiri) × (1 + USD/TRY artışı) − 1`\n\n"
-                "Örnek — SMH son 1 yıl: USD bazlı ~%93, lira ~%17 değer kaybetmiş → "
-                "TL bazlı ~%126. Aradaki ~33 puan tamamen kur farkıdır; fon aynı "
-                "fon, sadece hangi parayla ölçtüğünüz değişiyor.")
+                "Yani **hem hisseden hem dolardan** kazanırsın ve TL getirisi USD'den "
+                "**daha çok** çıkar (lira değer kaybettiği sürece). Toplamdan biraz "
+                "fazla olması, kur kazancının hissenin kârının üstüne de binmesindendir.")
 
         # dönem sırası korunur, fonun kendi barı koyu renkte vurgulanır
         alt_df["donem"] = pd.Categorical(alt_df["donem"],
@@ -425,6 +609,7 @@ with karsilastirma_sekme:
         y_f = yogunlasma(hh)
         r_f = risk_metrikleri(fon_fiyat[f].iloc[-gun:], risksiz)
         satirlar[f] = {
+            "Gider %": FON_BILGI[f][2] if f in FON_BILGI else None,
             "Hisse sayısı": y_f["hisse_sayisi"],
             "Etkin hisse": round(y_f["etkin_hisse"], 1),
             "En büyük %": round(y_f["en_buyuk"], 1),
@@ -440,6 +625,8 @@ with karsilastirma_sekme:
 
     with st.expander("ℹ️ Satırlar ne anlama geliyor?"):
         st.markdown(
+            "- **Gider %** — fonun yıllık işletme gideri (expense ratio). "
+            "Düşük olması iyidir; aynı temada ucuz fon uzun vadede avantajlı.\n"
             "- **Hisse sayısı** — fonun kaç farklı hisse tuttuğu.\n"
             "- **Etkin hisse** — ağırlıklar dikkate alınınca 'gerçekte' kaç "
             "hisseye yayıldığı. Sayı ne kadar yüksekse o kadar dağıtılmış. "
