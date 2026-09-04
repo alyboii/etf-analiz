@@ -650,21 +650,49 @@ with karsilastirma_sekme:
         st.caption(f"⚠️ {', '.join(genc)} için {donem_adi} kadar geçmiş yok; "
                    "bu fonların getiri/risk değerleri daha kısa süreye aittir.")
 
-    # --- Normalize performans ---
+    # --- Normalize performans (kullanıcı seçimli) ---
     st.subheader("Göreli performans")
-    pencere = fon_fiyat.iloc[-gun:]
-    fig4 = go.Figure()
-    for t in list(hepsi) + [GOSTERGE]:
-        s = pencere[t].dropna()
-        fig4.add_trace(go.Scatter(
-            x=s.index, y=(s / s.iloc[0] - 1) * 100,
-            name="S&P 500" if t == GOSTERGE else t,
-            line=dict(width=2, dash="dot" if t == GOSTERGE else "solid",
-                      color="#999999" if t == GOSTERGE else None),
-        ))
-    fig4.update_layout(height=400, yaxis_title=f"{donem_adi} başından (%)",
-                       hovermode="x unified", margin=dict(t=10))
-    st.plotly_chart(fig4, use_container_width=True)
+    st.caption("Karşılaştırmak istediklerini seç — grafik sadece onları çizer.")
+
+    gc1, gc2 = st.columns([3, 2])
+    fon_secili = gc1.multiselect(
+        "Fonlar", list(hepsi),
+        default=[fon] if fon in hepsi else list(hepsi)[:2],
+        key="gp_fon")
+    gosterge_secili = gc2.multiselect(
+        "Karşılaştırma", ["S&P 500", "Nasdaq", "Bitcoin"],
+        default=["S&P 500"], key="gp_gosterge")
+
+    if not fon_secili and not gosterge_secili:
+        st.info("En az bir fon ya da karşılaştırma seç.")
+    else:
+        # pencere fonların işlem günleri (BTC hafta sonları hariç)
+        pencere_idx = fon_fiyat.iloc[-gun:].index
+        gosterge_map = {"S&P 500": GOSTERGE, "Nasdaq": NASDAQ, "Bitcoin": BITCOIN}
+        gosterge_renk = {"S&P 500": "#999999", "Nasdaq": "#e67e22",
+                         "Bitcoin": "#f1c40f"}
+        bench = fiyat_yukle(tuple(gosterge_map[g] for g in gosterge_secili)) \
+            if gosterge_secili else None
+
+        fig4 = go.Figure()
+        for t in fon_secili:
+            s = fon_fiyat[t].reindex(pencere_idx).dropna()
+            if len(s) < 2:
+                continue
+            fig4.add_trace(go.Scatter(
+                x=s.index, y=(s / s.iloc[0] - 1) * 100, name=t,
+                line=dict(width=2.5)))
+        for g in gosterge_secili:
+            s = bench[gosterge_map[g]].reindex(pencere_idx).ffill().dropna()
+            if len(s) < 2:
+                continue
+            fig4.add_trace(go.Scatter(
+                x=s.index, y=(s / s.iloc[0] - 1) * 100, name=g,
+                line=dict(width=2, dash="dot", color=gosterge_renk[g])))
+        fig4.update_layout(height=430, yaxis_title=f"{donem_adi} başından (%)",
+                           hovermode="x unified", margin=dict(t=10),
+                           legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(fig4, use_container_width=True)
 
     # --- Örtüşme ---
     st.subheader("Portföy örtüşmesi")
