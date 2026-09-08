@@ -130,6 +130,13 @@ def fiyat_yukle(tickerlar):
     """
     tickerlar = tuple(dict.fromkeys(tickerlar))  # tekrarları at, sırayı koru
     yol = Path("data/cache") / f"fiyat_{pd.Timestamp.today():%Y%m%d}.parquet"
+    # eski günlerin önbellek dosyalarını temizle (birikmesin)
+    try:
+        for eski_yol in yol.parent.glob("fiyat_*.parquet"):
+            if eski_yol != yol:
+                eski_yol.unlink()
+    except Exception:
+        pass
     try:
         onbellek = pd.read_parquet(yol) if yol.exists() else pd.DataFrame()
     except Exception:
@@ -517,7 +524,7 @@ with detay_sekme:
         st.caption("Takvim yılı içi getiri (USD). Son yıl bu yılın başından "
                    "bugüne (YTD).")
         yg = yillik_getiriler(fiyat[fon])
-        if len(yg) >= 2:
+        if len(yg) >= 1:
             bugun_yil = pd.Timestamp.today().year
             etiketler = [f"{int(yil)} (YTD)" if int(yil) == bugun_yil
                          else str(int(yil)) for yil in yg.index]
