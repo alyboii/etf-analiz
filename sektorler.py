@@ -37,6 +37,7 @@ FONLAR = [
     ("ROKT", parse_spdr,    "data/raw/holdings-daily-us-en-rokt.xlsx"),
     ("NASA", parse_tema,    "data/raw/NASA-holdings-08282026.csv"),
     ("IGV",  parse_ishares, "data/raw/IGV_holdings.csv"),
+    ("XSW",  parse_spdr,    "data/raw/holdings-daily-us-en-xsw.xlsx"),
     ("AIQ",  parse_globalx, "data/raw/aiq_full-holdings_20260828.csv"),
     ("CHAT", parse_roundhill, "data/raw/CHAT_ETF_Holdings_08-30-2026.csv"),
     # UFO dosyası gelince buraya eklenir

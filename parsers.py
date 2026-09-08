@@ -326,6 +326,7 @@ if __name__ == "__main__":
         (parse_invesco, "data/raw/invesco_semiconductors_etf-Complete_Holdings.csv", "PSI"),
         (parse_tema,    "data/raw/NASA-holdings-08282026.csv", "NASA"),
         (parse_ishares, "data/raw/IGV_holdings.csv", "IGV"),
+        (parse_spdr,    "data/raw/holdings-daily-us-en-xsw.xlsx", "XSW"),
         (parse_globalx, "data/raw/aiq_full-holdings_20260828.csv", "AIQ"),
         (parse_roundhill, "data/raw/CHAT_ETF_Holdings_08-30-2026.csv", "CHAT"),
     ]:

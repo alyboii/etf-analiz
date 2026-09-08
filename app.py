@@ -37,8 +37,11 @@ FONLAR = {
         "NASA": (parse_tema, "data/raw/NASA-holdings-08282026.csv"),
         # UFO: procureetfs.com Cloudflare arkasında; dosya elle indirilmeli
     },
+    "Yazılım": {
+        "IGV": (parse_ishares, "data/raw/IGV_holdings.csv"),
+        "XSW": (parse_spdr, "data/raw/holdings-daily-us-en-xsw.xlsx"),
+    },
     "Yapay Zeka": {
-        "IGV":  (parse_ishares, "data/raw/IGV_holdings.csv"),
         "AIQ":  (parse_globalx, "data/raw/aiq_full-holdings_20260828.csv"),
         "CHAT": (parse_roundhill,
                  "data/raw/CHAT_ETF_Holdings_08-30-2026.csv"),
@@ -66,6 +69,8 @@ FON_BILGI = {
              "Küresel uzay ekonomisi (yabancı borsalar dahil)"),
     "IGV":  ("iShares Genişletilmiş Yazılım ETF", "iShares", 0.38,
              "ABD yazılım şirketleri (Palantir, Microsoft, Salesforce)"),
+    "XSW":  ("SPDR S&P Yazılım & Hizmetler ETF", "State Street", 0.35,
+             "ABD yazılım — eşit ağırlıklı (küçük/orta ölçek dahil)"),
     "AIQ":  ("Global X Yapay Zeka & Teknoloji ETF", "Global X", 0.68,
              "Yapay zeka ve büyük teknoloji, küresel"),
     "CHAT": ("Roundhill Üretken Yapay Zeka ETF", "Roundhill", 0.75,
@@ -500,6 +505,53 @@ with detay_sekme:
                                      "katki": "Katkı puan"}).round(1),
                     hide_index=True, use_container_width=True)
 
+        # --- Zaman içinde değişim (sadece geçmiş holdings olan fonlar) ---
+        if gec_tum is not None and (gec_tum["fund"] == fon).any():
+            from metrikler import (agirlik_serisi, agirlik_top_seri,
+                                   turnover as _turnover)
+            st.divider()
+            st.subheader("Zaman içinde değişim")
+            fg = gec_tum[gec_tum["fund"] == fon]
+            araly = (f"{fg['date'].min():%m.%Y} – {fg['date'].max():%m.%Y}, "
+                     f"{fg['date'].nunique()} anlık görüntü")
+            st.caption(f"Fonun ağırlıkları geçmişte nasıl değişti ({araly}).")
+
+            z1, z2 = st.columns(2)
+            with z1:
+                st.caption("Bir hissenin ağırlığı")
+                tickerlar = (fg[fg["date"] == fg["date"].max()]
+                             .nlargest(20, "weight")["ticker"].tolist())
+                vk = "NVDA" if "NVDA" in tickerlar else tickerlar[0]
+                sec_t = st.selectbox("Hisse", tickerlar,
+                                     index=tickerlar.index(vk), key="zaman_t")
+                serie = agirlik_serisi(gec_tum, fon, sec_t)
+                figz = px.line(x=serie.index, y=serie.values,
+                               labels={"x": "", "y": "Ağırlık (%)"}, markers=True)
+                figz.update_traces(line=dict(color="#1f77b4", width=2.5))
+                figz.update_layout(height=320, margin=dict(t=10))
+                st.plotly_chart(figz, use_container_width=True)
+                if len(serie) >= 2:
+                    st.caption(f"{sec_t}: %{serie.iloc[0]:.1f} "
+                               f"({serie.index[0]:%m.%Y}) → %{serie.iloc[-1]:.1f} "
+                               f"({serie.index[-1]:%m.%Y})")
+            with z2:
+                st.caption("En büyük hisselerin evrimi")
+                top_seri = agirlik_top_seri(gec_tum, fon, 8)
+                figt = px.area(top_seri, labels={"value": "Ağırlık (%)",
+                                                 "date": "", "ticker": ""})
+                figt.update_layout(height=320, margin=dict(t=10),
+                                   legend=dict(orientation="h", y=-0.2))
+                st.plotly_chart(figt, use_container_width=True)
+
+            giren, cikan, kars_t = _turnover(gec_tum, fon, gun)
+            if kars_t is not None:
+                st.caption(f"**Giren / çıkan hisseler** ({kars_t:%d.%m.%Y} → bugün)")
+                t1, t2 = st.columns(2)
+                t1.markdown("🟢 **Giren**: " +
+                            (", ".join(giren) if giren else "—"))
+                t2.markdown("🔴 **Çıkan**: " +
+                            (", ".join(cikan) if cikan else "—"))
+
         # --- Endeks karşılaştırması (S&P 500 + Nasdaq) ---
         st.subheader("Endekslere karşı fiyat")
         st.caption(f"{donem_adi} başından itibaren yüzde getiri. USD bazlı.")
@@ -648,11 +700,19 @@ with detay_sekme:
 # Karşılaştırma
 # =====================================================================
 with karsilastirma_sekme:
-    hepsi = tum_holdings(tema)
+    kapsam = st.radio("Kapsam", [f"Tema içi ({tema})", "Tüm fonlar (temalar arası)"],
+                      horizontal=True, key="kars_kapsam")
+    if kapsam.startswith("Tüm"):
+        hepsi = her_fon()
+        baslik = "Tüm fonlar (temalar arası)"
+    else:
+        hepsi = tum_holdings(tema)
+        baslik = tema
+
     fon_fiyat = fiyat_yukle(tuple(hepsi) + (GOSTERGE, RISKSIZ))
     risksiz = risksiz_gunluk_oran(fon_fiyat[RISKSIZ].iloc[-gun:])
 
-    st.title(f"{tema} — {donem_adi}")
+    st.title(f"{baslik} — {donem_adi}")
     snapshot_notu(hepsi)
 
     # --- Yan yana tablo ---
@@ -762,9 +822,14 @@ with karsilastirma_sekme:
     # --- Ortak hisseler ---
     st.subheader("Hepsinde bulunan hisseler")
     ortak = ortak_hisseler(hepsi)
-    st.caption(f"{len(ortak)} hisse {len(hepsi)} fonun hepsinde var. "
-               "Ağırlık farkı fonların nasıl ayrıştığını gösterir.")
-    st.dataframe(ortak.round(2), use_container_width=True)
+    if ortak.empty:
+        st.caption(f"{len(hepsi)} fonun **hepsinde** birden bulunan hisse yok — "
+                   "temalar çok farklı. En az 2 fonda ortak olanlar için "
+                   "'Hisse bazlı' sekmesine bak.")
+    else:
+        st.caption(f"{len(ortak)} hisse {len(hepsi)} fonun hepsinde var. "
+                   "Ağırlık farkı fonların nasıl ayrıştığını gösterir.")
+        st.dataframe(ortak.round(2), use_container_width=True)
 
 
 # =====================================================================

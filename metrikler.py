@@ -322,3 +322,53 @@ def yillik_getiriler(seri):
         return pd.Series(dtype=float)
     g = seri.groupby(seri.index.year)
     return (g.last() / g.first() - 1) * 100
+
+
+def agirlik_serisi(gecmis, fon, ticker):
+    """Bir hissenin fondaki ağırlığının tarih→% serisi (geçmiş holdings)."""
+    d = gecmis[(gecmis["fund"] == fon) & (gecmis["ticker"] == ticker)]
+    return d.set_index("date")["weight"].sort_index()
+
+
+def agirlik_top_seri(gecmis, fon, n=8):
+    """En büyük n hissenin zaman içindeki ağırlık evrimi (tarih × ticker, %).
+
+    'n' hisse son tarihteki ağırlığa göre seçilir; kalan tüm hisseler
+    'Diğer' kolonunda toplanır. Stacked area için uygundur.
+    """
+    d = gecmis[gecmis["fund"] == fon]
+    if d.empty:
+        return pd.DataFrame()
+    son_tarih = d["date"].max()
+    top = (d[d["date"] == son_tarih].nlargest(n, "weight")["ticker"].tolist())
+
+    piv = d.pivot_table(index="date", columns="ticker", values="weight",
+                        aggfunc="sum").sort_index()
+    tablo = piv[top].copy()
+    diger = piv.drop(columns=top, errors="ignore").sum(axis=1)
+    if (diger > 0).any():
+        tablo["Diğer"] = diger
+    return tablo
+
+
+def turnover(gecmis, fon, gun):
+    """Fonun son tarih ile ~gun önce arasında giren/çıkan hisseleri.
+
+    (giren_liste, cikan_liste, karsilastirma_tarihi) döner.
+    """
+    d = gecmis[gecmis["fund"] == fon]
+    if d.empty:
+        return [], [], None
+    tarihler = sorted(d["date"].unique())
+    son = tarihler[-1]
+    # 'gun' işlem gününü takvim gününe çevir, o tarihe eşit/önceki en yakın
+    # anlık görüntüyü bul (çeyreklik veride 'gun'-inci görüntü aşırıya kaçar)
+    hedef = pd.Timestamp(son) - pd.Timedelta(days=int(gun * 365 / 252))
+    oncekiler = [t for t in tarihler if t <= hedef]
+    onceki = oncekiler[-1] if oncekiler else tarihler[0]
+
+    son_set = set(d[d["date"] == son]["ticker"])
+    onceki_set = set(d[d["date"] == onceki]["ticker"])
+    giren = sorted(son_set - onceki_set)
+    cikan = sorted(onceki_set - son_set)
+    return giren, cikan, pd.Timestamp(onceki)
