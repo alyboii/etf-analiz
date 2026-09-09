@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -184,6 +185,41 @@ def alt_fiyat_yukle():
 def sektor_yukle():
     """Ticker -> Türkçe sektör sözlüğü. Yoksa boş."""
     return sektorler.yukle()
+
+
+_KURUMSAL_EK = re.compile(
+    r"\b(co|ltd|inc|corp|corporation|company|ag|sa|plc|nv|spa|holdings?|"
+    r"group|se|oyj|reg|ord|class|adr|sponsored|limited|technologies?|"
+    r"the)\b\.?", re.I)
+
+
+def kisa_ad(ad):
+    """Şirket adını kısalt: 'SAMSUNG ELECTRONICS CO LTD' -> 'Samsung Electronics'."""
+    s = re.sub(r"[.,\-]", " ", str(ad))
+    s = _KURUMSAL_EK.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip().title()
+    if not s:
+        return str(ad)
+    if len(s) > 26:                      # kelime sınırında kes
+        s = s[:26].rsplit(" ", 1)[0] + "…"
+    return s
+
+
+def gorunen(ticker, ad):
+    """Yabancı borsa ticker'ı (0700.HK gibi) yerine şirket adı; US ticker kalır."""
+    if re.search(r"\.\w+$", str(ticker)):   # nokta sonekli = yabancı borsa
+        return kisa_ad(ad)
+    return str(ticker)
+
+
+@st.cache_data(show_spinner=False)
+def ad_haritasi():
+    """Tüm fonlardaki ticker -> görünen etiket (yabancıysa şirket adı)."""
+    harita = {}
+    for hh in her_fon().values():
+        for t, n in zip(hh["ticker"], hh["name"]):
+            harita.setdefault(t, gorunen(t, n))
+    return harita
 
 
 def snapshot_notu(holdings):
@@ -396,8 +432,9 @@ with detay_sekme:
         st.subheader(f"{fon} alırsan ne alırsın?")
         enb = h.nlargest(5, "weight")
         ilk3 = h.nlargest(3, "weight")["weight"].sum()
-        satir = " · ".join(f"**%{w:.0f}** {t}"
-                           for t, w in zip(enb["ticker"], enb["weight"]))
+        satir = " · ".join(f"**%{w:.0f}** {gorunen(t, n)}"
+                           for t, n, w in zip(enb["ticker"], enb["name"],
+                                              enb["weight"]))
         st.markdown(
             f"Yatırdığın her 100 birimin: {satir} … olarak dağılır. "
             f"En büyük **3 hisse** paranın **%{ilk3:.0f}**'ını oluşturur; "
@@ -416,8 +453,9 @@ with detay_sekme:
         d["getiri"] = d["ticker"].map(getiri)
         # borsada fiyatı çekilemeyen = özel şirket (SPV/halka açılmamış)
         d["ozel"] = ~d["ticker"].isin(fiyatli)
-        d["etiket"] = [f"🔒 {t}" if o else t
-                       for t, o in zip(d["ticker"], d["ozel"])]
+        # etiket: özel ise 🔒 + ticker, yabancı borsa ise şirket adı, US ise ticker
+        d["etiket"] = [(f"🔒 {t}" if o else gorunen(t, n))
+                       for t, n, o in zip(d["ticker"], d["name"], d["ozel"])]
         d["durum"] = ["Özel şirket — borsada fiyatı yok" if o
                       else (f"{g:.1f}%" if pd.notna(g) else "veri yetersiz")
                       for o, g in zip(d["ozel"], d["getiri"])]
@@ -478,12 +516,18 @@ with detay_sekme:
         if veri_yok:
             st.caption(f"Yetersiz veri: {', '.join(veri_yok)}")
 
+        # yabancı ticker yerine şirket adı göster (US ticker kalır)
+        kdf = kdf.copy()
+        kdf["etiket"] = [gorunen(t, n)
+                         for t, n in zip(kdf["ticker"], kdf["name"])]
+
         ilk_son = pd.concat([kdf.head(8), kdf.tail(8)])
-        fig2 = px.bar(ilk_son, x="katki", y="ticker", orientation="h",
+        fig2 = px.bar(ilk_son, x="katki", y="etiket", orientation="h",
                       color="katki", color_continuous_midpoint=0,
                       color_continuous_scale=["#c0392b", "#eeeeee", "#27ae60"])
         fig2.update_layout(height=500, yaxis=dict(autorange="reversed"),
-                           showlegend=False, coloraxis_showscale=False)
+                           showlegend=False, coloraxis_showscale=False,
+                           yaxis_title="")
         st.plotly_chart(fig2, use_container_width=True)
 
         # --- Getiriye en çok katkı yapan / götüren ---
@@ -496,15 +540,15 @@ with detay_sekme:
             with kk1:
                 st.caption(f"🟢 Getiriye en çok KATKI yapan 5 hisse ({donem_adi})")
                 st.dataframe(
-                    kaz[["ticker", "getiri", "katki"]]
-                    .rename(columns={"ticker": "Hisse", "getiri": "Getiri %",
+                    kaz[["etiket", "getiri", "katki"]]
+                    .rename(columns={"etiket": "Hisse", "getiri": "Getiri %",
                                      "katki": "Katkı puan"}).round(1),
                     hide_index=True, use_container_width=True)
             with kk2:
                 st.caption(f"🔴 Getiriyi en çok DÜŞÜREN 5 hisse ({donem_adi})")
                 st.dataframe(
-                    kayb[["ticker", "getiri", "katki"]]
-                    .rename(columns={"ticker": "Hisse", "getiri": "Getiri %",
+                    kayb[["etiket", "getiri", "katki"]]
+                    .rename(columns={"etiket": "Hisse", "getiri": "Getiri %",
                                      "katki": "Katkı puan"}).round(1),
                     hide_index=True, use_container_width=True)
 
@@ -871,7 +915,9 @@ with hisse_sekme:
         adaylar = [t for t in adaylar if kac_fon[t] >= 2]
     # önemliler üstte: önce fon sayısı, sonra toplam ağırlık
     adaylar.sort(key=lambda t: (-int(kac_fon[t]), -float(matris.loc[t].sum())))
-    etiket = {f"{t}  ·  {int(kac_fon[t])} fonda": t for t in adaylar}
+    ad_h = ad_haritasi()
+    # yabancı ticker'da şirket adını, US ticker'da ticker'ı göster
+    etiket = {f"{ad_h.get(t, t)}  ·  {int(kac_fon[t])} fonda": t for t in adaylar}
 
     if not etiket:
         st.info("Bu filtreyle hisse kalmadı.")
@@ -884,7 +930,7 @@ with hisse_sekme:
 
         sira = hisse_siralamasi(hepsi_fon, secili)
         en = sira.index[0]
-        st.metric(f"{secili} — en çok tutan fon",
+        st.metric(f"{ad_h.get(secili, secili)} — en çok tutan fon",
                   f"{en}  %{sira.iloc[0]:.2f}")
         figh = px.bar(x=sira.values, y=sira.index, orientation="h",
                       labels={"x": "Ağırlık (%)", "y": ""},
@@ -936,6 +982,8 @@ with hisse_sekme:
                                     values="weight", aggfunc="sum")
                        .fillna(0.0))
             piv = piv.loc[piv.sum(axis=1).sort_values(ascending=False).index]
+            # yabancı ticker'ları şirket adına çevir
+            piv.index = [ad_h.get(t, t) for t in piv.index]
             st.caption(f"{sektor_sec}: {len(piv)} hisse. "
                        "Değerler o fondaki ağırlık (%).")
             st.dataframe(piv.round(2), use_container_width=True,
