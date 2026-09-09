@@ -97,25 +97,25 @@ KORELASYON_VARLIK = [BITCOIN, NASDAQ, GOSTERGE]  # fon ile karşılaştırılanl
 ALT_TICKER = ("GC=F", "SI=F", "TRY=X", "EURTRY=X", "EURUSD=X", "BIL")
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def holdings_yukle(fon, tema):
     parser, yol = FONLAR[tema][fon]
     return parser(yol, fon)
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def tum_holdings(tema):
     return {f: holdings_yukle(f, tema) for f in FONLAR[tema]}
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def her_fon():
     """Tüm temalardaki bütün fonlar — hisse bazlı sıralama için."""
     return {f: holdings_yukle(f, t)
             for t in FONLAR for f in FONLAR[t]}
 
 
-@st.cache_data
+@st.cache_data(show_spinner="🔒 DXYZ (SEC) verisi yükleniyor…")
 def dxyz_yukle():
     """Destiny Tech100 pozisyonları (SEC N-PORT). Ağ hatasında None."""
     try:
@@ -125,7 +125,8 @@ def dxyz_yukle():
         return ("hata", str(e))
 
 
-@st.cache_data
+@st.cache_data(show_spinner="📈 Fiyat verileri yükleniyor "
+                            "(ilk açılış 30-60 sn sürebilir)…")
 def fiyat_yukle(tickerlar):
     """Fiyat serileri; günlük disk önbelleğiyle (data/cache/fiyat_<gün>.parquet).
 
@@ -164,14 +165,14 @@ def fiyat_yukle(tickerlar):
     return onbellek[var].dropna(how="all")
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def gecmis_yukle():
     """Geçmiş holdings (gecmis.py ile toplanır). Yoksa None."""
     yol = Path("data/history/holdings.parquet")
     return pd.read_parquet(yol) if yol.exists() else None
 
 
-@st.cache_data
+@st.cache_data(show_spinner="💱 Altın / döviz verileri yükleniyor…")
 def alt_fiyat_yukle():
     """Alternatif varlık fiyatları (altın, gümüş, USD/TRY, EUR...)."""
     df = yf.download(list(ALT_TICKER), start="2019-01-01",
@@ -179,7 +180,7 @@ def alt_fiyat_yukle():
     return df.dropna(how="all")
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def sektor_yukle():
     """Ticker -> Türkçe sektör sözlüğü. Yoksa boş."""
     return sektorler.yukle()
