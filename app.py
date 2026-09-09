@@ -486,20 +486,22 @@ with detay_sekme:
                            showlegend=False, coloraxis_showscale=False)
         st.plotly_chart(fig2, use_container_width=True)
 
-        # --- Kazananlar / kaybedenler ---
+        # --- Getiriye en çok katkı yapan / götüren ---
         if len(kdf) >= 2:
+            st.caption("Katkı = ağırlık × getiri; hem hissenin büyüklüğünü "
+                       "hem hareketini birlikte ölçer.")
             kk1, kk2 = st.columns(2)
             kaz = kdf.head(5)
             kayb = kdf.tail(5).iloc[::-1]
             with kk1:
-                st.caption(f"🟢 {donem_adi} en çok TAŞIYAN 5 hisse")
+                st.caption(f"🟢 Getiriye en çok KATKI yapan 5 hisse ({donem_adi})")
                 st.dataframe(
                     kaz[["ticker", "getiri", "katki"]]
                     .rename(columns={"ticker": "Hisse", "getiri": "Getiri %",
                                      "katki": "Katkı puan"}).round(1),
                     hide_index=True, use_container_width=True)
             with kk2:
-                st.caption(f"🔴 {donem_adi} en çok BATIRAN 5 hisse")
+                st.caption(f"🔴 Getiriyi en çok DÜŞÜREN 5 hisse ({donem_adi})")
                 st.dataframe(
                     kayb[["ticker", "getiri", "katki"]]
                     .rename(columns={"ticker": "Hisse", "getiri": "Getiri %",
