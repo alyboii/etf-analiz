@@ -17,6 +17,7 @@ from metrikler import (donem_getirisi, yogunlasma, katki,
                        fon_sektor_agirliklari, portfoy_serisi,
                        korelasyon, yillik_getiriler)
 import sektorler
+import ulkeler
 
 st.set_page_config(page_title="ETF Analiz", layout="wide")
 
@@ -185,6 +186,25 @@ def alt_fiyat_yukle():
 def sektor_yukle():
     """Ticker -> Türkçe sektör sözlüğü. Yoksa boş."""
     return sektorler.yukle()
+
+
+@st.cache_data(show_spinner=False)
+def ulke_yukle():
+    """Ticker -> (ülke_tr, bayrak) sözlüğü. Yoksa boş."""
+    return ulkeler.yukle()
+
+
+def ulke_dagilimi(holdings, ulke_h):
+    """Fonun ağırlığını ülkeye göre topla -> (ülke, bayrak, ağırlık) DataFrame."""
+    satirlar = []
+    for t, w in zip(holdings["ticker"], holdings["weight"]):
+        ulke, bayrak = ulke_h.get(t, ("Bilinmiyor", "🏳️"))
+        satirlar.append((ulke, bayrak, w))
+    df = pd.DataFrame(satirlar, columns=["ulke", "bayrak", "weight"])
+    g = (df.groupby(["ulke", "bayrak"], as_index=False)["weight"].sum()
+         .sort_values("weight", ascending=False))
+    g["etiket"] = g["bayrak"] + " " + g["ulke"]
+    return g
 
 
 _KURUMSAL_EK = re.compile(
@@ -483,6 +503,45 @@ with detay_sekme:
                 "halka açılmamış) şirketlere fonun dolaylı erişimi — genelde bir "
                 "SPV/fon aracılığıyla. Günlük borsa fiyatı olmadığı için getirisi "
                 f"hesaplanamaz, treemap'te **renksiz** görünür. Bu fondaki: {liste}.")
+
+        # --- Ülke dağılımı ---
+        ulke_h = ulke_yukle()
+        if ulke_h:
+            st.subheader("Hangi ülkelerden?")
+            ud = ulke_dagilimi(h, ulke_h)
+            abd = ud[ud["ulke"] == "ABD"]["weight"].sum()
+            yabanci = 100 - abd
+            bilinmiyor = ud[ud["ulke"] == "Bilinmiyor"]["weight"].sum()
+            c1, c2 = st.columns(2)
+            c1.metric("🇺🇸 ABD şirketleri", f"%{abd:.0f}")
+            c2.metric("🌍 Diğer ülkeler", f"%{yabanci:.0f}")
+
+            # çubuk grafik: en büyük 10 ülke, kalanı "Diğer"
+            gost = ud.copy()
+            if len(gost) > 11:
+                ust = gost.iloc[:10]
+                kalan = gost.iloc[10:]["weight"].sum()
+                gost = pd.concat([ust, pd.DataFrame(
+                    [{"ulke": "Diğer", "bayrak": "🌍", "weight": kalan,
+                      "etiket": "🌍 Diğer"}])], ignore_index=True)
+            gost = gost.sort_values("weight")   # yatay barda büyük üstte
+            figu = px.bar(
+                gost, x="weight", y="etiket", orientation="h",
+                text="weight",
+                color_discrete_sequence=["#2c7fb8"],
+            )
+            figu.update_traces(texttemplate="%{text:.1f}%",
+                               textposition="outside", cliponaxis=False)
+            figu.update_layout(
+                height=max(240, 34 * len(gost)),
+                xaxis_title="Ağırlık (%)", yaxis_title="",
+                margin=dict(t=10, l=0, r=40, b=0))
+            st.plotly_chart(figu, use_container_width=True)
+            st.caption(
+                "Şirketin **menşe ülkesi** (borsası değil): ör. TSMC, ABD'de ADR "
+                "olarak işlem görse de Tayvan sayılır. Kaynak: yfinance."
+                + (f" Ülkesi belirlenemeyen: %{bilinmiyor:.1f}."
+                   if bilinmiyor > 0.05 else ""))
 
         # --- Katkı ---
         st.subheader("Getiriye katkı")
